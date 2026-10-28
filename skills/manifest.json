@@ -1,0 +1,113 @@
+{
+  "schema_version": "1.0",
+  "installed_at": "2026-10-26",
+  "upstream": {
+    "repository": "anthropics/knowledge-work-plugins",
+    "commit": "33d3dea41a341b341d4f5da2e8801ae0c89be2b8",
+    "license": "Apache-2.0",
+    "license_path": "vendor/skills/anthropic-data/LICENSE",
+    "license_sha256": "a6946284993aeec75c7d75906064b66210c46051e562077efb30eb6dcfe72e26",
+    "skills": [
+      {
+        "name": "analyze",
+        "path": "vendor/skills/anthropic-data/analyze/SKILL.md",
+        "sha256": "4ee816363d944c7a959e43384576d979a414f37fff7071c0bfb8935aae10143e",
+        "url": "https://github.com/anthropics/knowledge-work-plugins/blob/33d3dea41a341b341d4f5da2e8801ae0c89be2b8/data/skills/analyze/SKILL.md"
+      },
+      {
+        "name": "sql-queries",
+        "path": "vendor/skills/anthropic-data/sql-queries/SKILL.md",
+        "sha256": "dbd5a5e2d563d83ca6d4d033206f285f503296eabff4a35545cdb4cb5302bd9a",
+        "url": "https://github.com/anthropics/knowledge-work-plugins/blob/33d3dea41a341b341d4f5da2e8801ae0c89be2b8/data/skills/sql-queries/SKILL.md"
+      },
+      {
+        "name": "data-visualization",
+        "path": "vendor/skills/anthropic-data/data-visualization/SKILL.md",
+        "sha256": "5811e8b3547cda6bc8af118aaf0d7589e8861cdc9facce6372dc78aea99ab87d",
+        "url": "https://github.com/anthropics/knowledge-work-plugins/blob/33d3dea41a341b341d4f5da2e8801ae0c89be2b8/data/skills/data-visualization/SKILL.md"
+      },
+      {
+        "name": "build-dashboard",
+        "path": "vendor/skills/anthropic-data/build-dashboard/SKILL.md",
+        "sha256": "6f23faa0b266820a23096f76df9d83e6b67597af4fc8c3306b4eba7e9f409f99",
+        "url": "https://github.com/anthropics/knowledge-work-plugins/blob/33d3dea41a341b341d4f5da2e8801ae0c89be2b8/data/skills/build-dashboard/SKILL.md"
+      }
+    ]
+  },
+  "active": [
+    {
+      "role": "main",
+      "name": "report-routing",
+      "path": "skills/main/report-routing/SKILL.md",
+      "sha256": "344b2fd41fea0cdd241f99ad9ea0a8e12431a8a37ae48965e25641a23b5e1aaf",
+      "adapted_from": [],
+      "project_authored": true
+    },
+    {
+      "role": "analyst",
+      "name": "data-analysis",
+      "path": "skills/analyst/data-analysis/SKILL.md",
+      "sha256": "2ca3c4188d49bfa65ba56965711882070daddcdf6793ac337c05534cd7f682ea",
+      "adapted_from": [
+        "analyze",
+        "sql-queries"
+      ],
+      "project_authored": true
+    },
+    {
+      "role": "analyst",
+      "name": "data-visualization",
+      "path": "skills/analyst/data-visualization/SKILL.md",
+      "sha256": "21443252b1d4f16ceffac9b34636c690bf63ac91588281e8cb343a174ff48062",
+      "adapted_from": [
+        "data-visualization"
+      ],
+      "project_authored": true
+    },
+    {
+      "role": "report_designer",
+      "name": "analytics-dashboard",
+      "path": "skills/report_designer/analytics-dashboard/SKILL.md",
+      "sha256": "36c4bae713927448a4376f943b1e17e38980b12846f9ae6d141c85ab587571db",
+      "adapted_from": [
+        "build-dashboard",
+        "data-visualization"
+      ],
+      "project_authored": true
+    }
+  ],
+  "installation": {
+    "method": "official skill-installer helper download; project --dest",
+    "helper": "skill-installer/scripts/install-skill-from-github.py",
+    "arguments": [
+      "--repo",
+      "anthropics/knowledge-work-plugins",
+      "--ref",
+      "33d3dea41a341b341d4f5da2e8801ae0c89be2b8",
+      "--path",
+      "data/skills/analyze",
+      "data/skills/sql-queries",
+      "data/skills/data-visualization",
+      "data/skills/build-dashboard",
+      "--dest",
+      "E:/DS project/vendor/skills/anthropic-data",
+      "--method",
+      "download"
+    ]
+  },
+  "runtime": {
+    "deepagents_version": "0.7.30",
+    "source": "code project ROOT/skills/<role>, independent of task data workspace",
+    "virtual_source": "/skills/",
+    "activation": "native SkillsMiddleware metadata plus pinned relevant core SKILL.md bodies; optional read_file for further guidance",
+    "event": "skill_loaded with role/name/path/sha256/activation"
+  },
+  "adaptations": [
+    "Project-authored active adapters; upstream originals unchanged and excluded from active discovery.",
+    "Controlled tool names and PostgreSQL $1 parameters; no arbitrary database or shell permission.",
+    "Scalar fast path computes only the requested metric, no mandatory full EDA.",
+    "Conclusions require computed registered metrics; no invented statistics or preview arithmetic.",
+    "Formal reports use validated render_report/revise_report, offline SVG paths and existing CSP.",
+    "No CDN, Chart.js, sample data, arbitrary HTML, or default CSV detail tables."
+  ]
+}

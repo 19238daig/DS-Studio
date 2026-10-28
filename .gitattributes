@@ -1,0 +1,8 @@
+* text=auto
+*.py text eol=lf
+*.md text eol=lf
+*.sh text eol=lf
+*.ps1 text eol=crlf
+# Preserve bytes covered by the third-party provenance/hash manifests.
+/skills/** -text
+/vendor/** -text

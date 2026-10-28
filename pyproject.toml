@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ds-project"
+version = "0.1.0"
+description = "Local Deep Agents data analysis and report application"
+requires-python = ">=3.11,<3.14"
+dependencies = [
+  "deepagents==0.7.30", "langchain-openai==1.7.2",
+  "fastapi==0.159.1", "uvicorn==0.54.0", "streamlit==1.66.1",
+  "pandas==3.0.6", "openpyxl==3.1.5", "xlrd==2.0.2",
+  "lxml==6.1.3", "beautifulsoup4==4.15.0", "html5lib==1.1",
+  "matplotlib==3.11.2", "jinja2==3.1.6", "filelock==4.2.4",
+  "httpx==0.28.1", "python-dotenv==1.2.4", "python-multipart==0.0.32",
+  "pydantic-settings==2.16.1",
+  "psutil==7.2.2",
+  "psycopg[binary]==3.3.6", "pglast==8.7",
+]
+
+[project.optional-dependencies]
+dev = ["pytest==9.1.1"]
+
+[tool.setuptools.packages.find]
+include = ["src*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py", "review_*.py"]
+pythonpath = ["."]

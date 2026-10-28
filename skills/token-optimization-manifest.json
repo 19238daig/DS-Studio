@@ -1,0 +1,111 @@
+{
+  "schema_version": "1.0",
+  "upstream": {
+    "repository": "bm629/agent-skills",
+    "commit": "6f1504cfc0e39fed36f6d7405907231d6474c01d",
+    "license": "MIT",
+    "installed_with": "skill-installer/install-skill-from-github.py --method download"
+  },
+  "files": [
+    {
+      "path": "vendor/skills/bm629/token-optimization/LICENSE",
+      "sha256": "6136365a2c647bdd8ca3acfbc2cc1fed16fc37189281882de51d9c6e5009fe6e"
+    },
+    {
+      "path": "vendor/skills/bm629/token-optimization/SKILL.md",
+      "sha256": "f643b72b632a0e822851de889788a4edebbcceed58101ea78209ac7a50010867"
+    },
+    {
+      "path": "vendor/skills/bm629/token-optimization/references/agent-loop-patterns.md",
+      "sha256": "a3bd4ebbf98e12e4bd945f7c37728176b6fad74d5e50e3702cd4f0594e7b773e"
+    },
+    {
+      "path": "vendor/skills/bm629/token-optimization/references/context-management.md",
+      "sha256": "fcda7cdbd92ed0c1a4a01721fc5e3e4b7d04f92748d01a523f818a7cf2d6da82"
+    },
+    {
+      "path": "vendor/skills/bm629/token-optimization/references/measurement-and-budgets.md",
+      "sha256": "2157dfd307a557b0223bdfe8027e97ff60e06563948993543f3e96e4971d3d95"
+    },
+    {
+      "path": "vendor/skills/bm629/token-optimization/references/output-and-verification.md",
+      "sha256": "29798c17e82337c04843a1978002c6a775fb9a586e94a9c0af9d108092d165de"
+    },
+    {
+      "path": "vendor/skills/bm629/token-optimization/references/prompt-caching.md",
+      "sha256": "a18c7fd4d4156d54e3a5f6e111b32d9c6302babc54b912c947b29df91a55acbc"
+    },
+    {
+      "path": "skills/main/token-optimization/SKILL.md",
+      "sha256": "2819a247e6e6dbfb5c876933b6753bcdf4ede12da511aee267ee02c88c17666e"
+    },
+    {
+      "path": "skills/main/token-optimization/references/agent-loop-patterns.md",
+      "sha256": "a3bd4ebbf98e12e4bd945f7c37728176b6fad74d5e50e3702cd4f0594e7b773e"
+    },
+    {
+      "path": "skills/main/token-optimization/references/context-management.md",
+      "sha256": "fcda7cdbd92ed0c1a4a01721fc5e3e4b7d04f92748d01a523f818a7cf2d6da82"
+    },
+    {
+      "path": "skills/main/token-optimization/references/measurement-and-budgets.md",
+      "sha256": "2157dfd307a557b0223bdfe8027e97ff60e06563948993543f3e96e4971d3d95"
+    },
+    {
+      "path": "skills/main/token-optimization/references/output-and-verification.md",
+      "sha256": "29798c17e82337c04843a1978002c6a775fb9a586e94a9c0af9d108092d165de"
+    },
+    {
+      "path": "skills/main/token-optimization/references/prompt-caching.md",
+      "sha256": "a18c7fd4d4156d54e3a5f6e111b32d9c6302babc54b912c947b29df91a55acbc"
+    },
+    {
+      "path": "skills/analyst/token-optimization/SKILL.md",
+      "sha256": "2819a247e6e6dbfb5c876933b6753bcdf4ede12da511aee267ee02c88c17666e"
+    },
+    {
+      "path": "skills/analyst/token-optimization/references/agent-loop-patterns.md",
+      "sha256": "a3bd4ebbf98e12e4bd945f7c37728176b6fad74d5e50e3702cd4f0594e7b773e"
+    },
+    {
+      "path": "skills/analyst/token-optimization/references/context-management.md",
+      "sha256": "fcda7cdbd92ed0c1a4a01721fc5e3e4b7d04f92748d01a523f818a7cf2d6da82"
+    },
+    {
+      "path": "skills/analyst/token-optimization/references/measurement-and-budgets.md",
+      "sha256": "2157dfd307a557b0223bdfe8027e97ff60e06563948993543f3e96e4971d3d95"
+    },
+    {
+      "path": "skills/analyst/token-optimization/references/output-and-verification.md",
+      "sha256": "29798c17e82337c04843a1978002c6a775fb9a586e94a9c0af9d108092d165de"
+    },
+    {
+      "path": "skills/analyst/token-optimization/references/prompt-caching.md",
+      "sha256": "a18c7fd4d4156d54e3a5f6e111b32d9c6302babc54b912c947b29df91a55acbc"
+    },
+    {
+      "path": "skills/report_designer/token-optimization/SKILL.md",
+      "sha256": "2819a247e6e6dbfb5c876933b6753bcdf4ede12da511aee267ee02c88c17666e"
+    },
+    {
+      "path": "skills/report_designer/token-optimization/references/agent-loop-patterns.md",
+      "sha256": "a3bd4ebbf98e12e4bd945f7c37728176b6fad74d5e50e3702cd4f0594e7b773e"
+    },
+    {
+      "path": "skills/report_designer/token-optimization/references/context-management.md",
+      "sha256": "fcda7cdbd92ed0c1a4a01721fc5e3e4b7d04f92748d01a523f818a7cf2d6da82"
+    },
+    {
+      "path": "skills/report_designer/token-optimization/references/measurement-and-budgets.md",
+      "sha256": "2157dfd307a557b0223bdfe8027e97ff60e06563948993543f3e96e4971d3d95"
+    },
+    {
+      "path": "skills/report_designer/token-optimization/references/output-and-verification.md",
+      "sha256": "29798c17e82337c04843a1978002c6a775fb9a586e94a9c0af9d108092d165de"
+    },
+    {
+      "path": "skills/report_designer/token-optimization/references/prompt-caching.md",
+      "sha256": "a18c7fd4d4156d54e3a5f6e111b32d9c6302babc54b912c947b29df91a55acbc"
+    }
+  ]
+}
