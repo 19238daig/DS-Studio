@@ -81,3 +81,13 @@ export function Loading() {
     </div>
   );
 }
+
+// Backend stage keys are produced in src/task_stream.py lifecycle_event and
+// the task record's stage field (src/agents.py); keep the two in sync.
+export const stageLabels: Record<string, string> = {
+  queued: '排队中',
+  starting: '正在启动',
+  understanding: '理解需求',
+  analysis: '数据分析',
+  report: '生成报告',
+};

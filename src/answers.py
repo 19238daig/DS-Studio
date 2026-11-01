@@ -11,11 +11,12 @@ import re
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
+from src.text_guard import TOKEN
+
 from src.schemas import ReportMetricReference
 from src.storage import StoreError
 
 
-TOKEN = re.compile(r'\{\{metric:([a-zA-Z0-9_-]+):([^{}:]+)\}\}')
 NUMBER = re.compile(r'\d|百分之|[零〇一二两三四五六七八九十百千万亿]{2,}|'
                     r'[零〇一二两三四五六七八九十百千万亿]+点[零〇一二两三四五六七八九十百千万亿]+|'
                     r'[零〇一二两三四五六七八九十百千万亿](?:倍|成|个|项|行|列|分|元|[%％])|'

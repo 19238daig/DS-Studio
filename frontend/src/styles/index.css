@@ -386,6 +386,10 @@ p {
   color: var(--ds-text);
   font-weight: 600;
 }
+.ds-pipeline-active {
+  color: var(--ds-brand);
+  font-weight: 700;
+}
 .ds-pipeline-todo {
   color: var(--ds-muted);
 }

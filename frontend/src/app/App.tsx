@@ -1,4 +1,4 @@
-import { Component, lazy, Suspense, useCallback, useEffect, useState } from 'react';
+import { Component, lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import {
   BrowserRouter,
@@ -16,6 +16,7 @@ import {
   Badge,
   Button,
   Drawer,
+  Grid,
   Dropdown,
   Input,
   Modal,
@@ -51,7 +52,7 @@ import { useTaskStream } from '../features/tasks/useTaskStream';
 import styles from './App.module.css';
 const Memory = lazy(() => import('../features/memory/Memory'));
 
-export class ErrorBoundary extends Component<{ children: ReactNode }, { error: Error | null }> {
+class ErrorBoundary extends Component<{ children: ReactNode }, { error: Error | null }> {
   state: { error: Error | null } = { error: null };
   static getDerivedStateFromError(error: Error) {
     return { error };
@@ -149,6 +150,8 @@ const tabs = [
 ];
 function Workbench() {
   const { sessionId: sid = '', page, artifactId } = useParams();
+  const screens = Grid.useBreakpoint();
+  const isDesktop = screens.lg !== false;
   const view = artifactId ? 'reports' : (page ?? 'chat');
   const navigate = useNavigate(),
     query = useQueryClient();
@@ -169,13 +172,19 @@ function Workbench() {
     toggle = useUI((s) => s.toggleTheme),
     choose = useUI((s) => s.choose);
   const chosen = useUI((s) => s.chosen[sid]);
-  const pending = session.data?.question_logs?.findLast((l) => !terminal.has(l.status))?.task_id;
+  const streamConnectedRef = useRef(false);
+    const pending = session.data?.question_logs?.findLast((l) => !terminal.has(l.status))?.task_id;
   const tid = chosen ?? pending ?? session.data?.question_logs?.at(-1)?.task_id;
   const task = useQuery({
     queryKey: ['task', tid],
     queryFn: ({ signal }) => api.task(tid!, signal),
     enabled: !!tid,
-    refetchInterval: (q) => (q.state.data && terminal.has(q.state.data.status) ? false : 3000),
+    refetchInterval: (q) =>
+      q.state.data && terminal.has(q.state.data.status)
+        ? false
+        : streamConnectedRef.current
+          ? 10000
+          : 3000,
   });
   const onFinal = useCallback(() => {
     void query.invalidateQueries({ queryKey: ['task', tid] });
@@ -187,6 +196,7 @@ function Workbench() {
     !!(tid && task.data && !terminal.has(task.data.status) && health.data?.streaming.enabled),
     onFinal,
   );
+  streamConnectedRef.current = stream.connected;
   useEffect(() => {
     if (task.data && terminal.has(task.data.status)) {
       void query.invalidateQueries({ queryKey: ['session', sid] });
@@ -360,7 +370,7 @@ function Workbench() {
   );
   return (
     <div className={styles.shell}>
-      <aside className={styles.sidebar}>{side}</aside>
+      {isDesktop && <aside className={styles.sidebar}>{side}</aside>}
       <main className={styles.main}>
         <header className={styles.topbar}>
           <div className={styles.breadcrumb}>

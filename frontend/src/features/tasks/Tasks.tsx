@@ -13,6 +13,7 @@ import {
   ErrorNotice,
   errorMessage,
   roleName,
+  stageLabels,
   Status,
   tokens,
 } from '../../shared/ui';
@@ -140,10 +141,7 @@ export function TaskInspector({
   // covers queued/starting and streaming fallback.
   const stageKey =
     liveStage === 'analysis' || liveStage === 'report' ? liveStage : (task?.stage ?? '');
-  const stageText =
-    { queued: '排队中', starting: '正在启动', understanding: '理解需求', analysis: '数据分析', report: '生成报告' }[
-      stageKey
-    ] ?? '';
+  const stageText = stageLabels[stageKey] ?? '';
   const estimate = active ? task?.estimate_seconds ?? null : null;
   const elapsed = metric?.elapsed_seconds ?? null;
   const overrun = estimate != null && elapsed != null && elapsed > estimate;

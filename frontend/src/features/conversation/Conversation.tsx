@@ -5,7 +5,9 @@ import {
   ArrowDownOutlined,
   ArrowUpOutlined,
   CloseOutlined,
+  CopyOutlined,
   FileTextOutlined,
+  ReloadOutlined,
 } from '@ant-design/icons';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -21,7 +23,7 @@ import type {
 } from '../../shared/api/types';
 import { terminal } from '../../shared/api/types';
 import { useUI, emptyDraft } from '../../shared/state';
-import { errorMessage } from '../../shared/ui';
+import { date, errorMessage, stageLabels } from '../../shared/ui';
 import { ReportAttachment } from '../reports/Reports';
 
 export function conversationMessages(session: Session, task?: Task): SessionMessage[] {
@@ -62,12 +64,30 @@ function Message({
   item,
   versions,
   sid,
+  failedTaskId,
 }: {
   item: SessionMessage;
   versions: Version[];
   sid: string;
+  failedTaskId?: string;
 }) {
   const user = item.role === 'user';
+  const { message } = App.useApp();
+  const query = useQueryClient();
+  const [retrying, setRetrying] = useState(false);
+  async function retry() {
+    if (!failedTaskId) return;
+    setRetrying(true);
+    try {
+      const next = await api.retry(failedTaskId, crypto.randomUUID());
+      useUI.getState().choose(sid, next.task_id);
+      await query.invalidateQueries({ queryKey: ['session', sid] });
+    } catch (e) {
+      void message.error(errorMessage(e));
+    } finally {
+      setRetrying(false);
+    }
+  }
   return (
     <article
       className={'ds-message ' + (user ? 'ds-message-user' : 'ds-message-assistant')}
@@ -84,10 +104,34 @@ function Message({
             DS 助手
           </>
         )}
+        {item.created_at && <span className="ds-message-time">{date(item.created_at)}</span>}
+        {!user && item.content && (
+          <Button
+            aria-label="复制回答"
+            type="text"
+            size="small"
+            icon={<CopyOutlined />}
+            onClick={() => {
+              navigator.clipboard.writeText(item.content);
+              void message.success('回答已复制。');
+            }}
+          />
+        )}
       </div>
       <div className="ds-prose">
         <ReactMarkdown remarkPlugins={[remarkGfm]}>{item.content}</ReactMarkdown>
       </div>
+      {failedTaskId && (
+        <Button
+          aria-label="重新运行本任务"
+          size="small"
+          icon={<ReloadOutlined />}
+          loading={retrying}
+          onClick={retry}
+        >
+          重新运行
+        </Button>
+      )}
       {!user &&
         versions.map((v) => (
           <ReportAttachment key={v.version ?? v.task_id} sid={sid} version={v} />
@@ -113,10 +157,7 @@ export function Conversation({
   // task record; a per-second local timer keeps elapsed time visibly moving.
   const stageKey =
     stream.stage === 'analysis' || stream.stage === 'report' ? stream.stage : (task?.stage ?? '');
-  const stageText =
-    { queued: '排队中', starting: '正在启动', understanding: '理解需求', analysis: '数据分析', report: '生成报告' }[
-      stageKey
-    ] ?? '';
+  const stageText = stageLabels[stageKey] ?? '';
   const [elapsed, setElapsed] = useState<number | null>(null);
   useEffect(() => {
     if (!live || !task?.created_at) return;
@@ -173,17 +214,23 @@ export function Conversation({
       return () => cancelAnimationFrame(id);
     } else setNewContent(true);
   }, [messages.length, stream.answer, stream.progress]);
-  const render = (i: number) => (
-    <Message
-      item={messages[i]}
-      sid={session.session_id}
-      versions={
-        lastReply.get(messages[i].task_id ?? '') === i
-          ? (versionsByTask.get(messages[i].task_id ?? '') ?? [])
-          : []
-      }
-    />
-  );
+  const render = (i: number) => {
+    const m = messages[i];
+    const failedTaskId =
+      task?.status === 'failed' && m.message_id === `final-${task.task_id}` ? task.task_id : undefined;
+    return (
+      <Message
+        item={m}
+        failedTaskId={failedTaskId}
+        sid={session.session_id}
+        versions={
+          lastReply.get(m.task_id ?? '') === i
+            ? (versionsByTask.get(m.task_id ?? '') ?? [])
+            : []
+        }
+      />
+    );
+  };
   return (
     <div className="ds-conversation">
       <div
@@ -222,22 +269,26 @@ export function Conversation({
           <div className="ds-live-message" role="status">
             <span className="ds-live-dot" />
             {stageText && <Tag color="processing">{stageText}</Tag>}
-            {liveElapsed && <span>已进行 {liveElapsed} · </span>}
+            {liveElapsed && <span>已进行 {liveElapsed}</span>}
             {(task?.stages?.length ?? 0) > 0 && (
               <div className="ds-pipeline" aria-label="任务进度流程">
                 {(() => {
-                  const labels: Record<string, string> = {
-                    understanding: '理解需求',
-                    analysis: '数据分析',
-                    report: '生成报告',
-                  };
                   const stages = task!.stages ?? [];
                   const currentIdx = stages.indexOf(stageKey);
                   return stages.map((s, i) => (
-                    <span key={s} className={i <= currentIdx ? 'ds-pipeline-done' : 'ds-pipeline-todo'}>
+                    <span
+                      key={s}
+                      className={
+                        i === currentIdx
+                          ? 'ds-pipeline-active'
+                          : i < currentIdx
+                            ? 'ds-pipeline-done'
+                            : 'ds-pipeline-todo'
+                      }
+                    >
                       {i > 0 && ' → '}
                       {i < currentIdx ? '✓ ' : ''}
-                      {labels[s] ?? s}
+                      {stageLabels[s] ?? s}
                     </span>
                   ));
                 })()}
@@ -258,7 +309,7 @@ export function Conversation({
             <strong>需要补充信息</strong>
             <p>填写下方输入区继续；将关联原任务和来源。</p>
             <Button
-              onClick={() =>
+              onClick={() => {
                 useUI.getState().patch(session.session_id, {
                   replyTo: task.task_id,
                   base: undefined,
@@ -266,8 +317,10 @@ export function Conversation({
                   sourceIds: task.spec.database_source_ids ?? [],
                   tables: task.spec.database_tables ?? {},
                   outputs: task.spec.expected_outputs ?? [],
-                })
-              }
+                });
+                setTimeout(() =>
+                  document.querySelector<HTMLTextAreaElement>('textarea[aria-label="你的问题"]')?.focus(), 80);
+              }}
             >
               补充说明
             </Button>
@@ -469,11 +522,15 @@ export function Composer({
         <span>
           {uncertain
             ? '提交结果待确认，再次发送相同内容将复用幂等键。'
-            : !health?.models_configured
-              ? '模型服务未配置，请在本机 .env 中配置。'
-              : !health?.worker.ready
-                ? 'Worker 未就绪，请检查后台服务。'
-                : 'Enter 发送 · Shift + Enter 换行'}
+            : !health
+              ? '正在连接服务…'
+              : !health.models_configured
+                ? '模型服务未配置，请在本机 .env 中配置。'
+                : !health.worker.ready
+                  ? 'Worker 未就绪，请检查后台服务。'
+                  : draft.content
+                  ? `Enter 发送 · ${draft.content.length}/20000`
+                  : 'Enter 发送 · Shift + Enter 换行'}
         </span>
         <span>分析结果请结合业务判断</span>
       </div>

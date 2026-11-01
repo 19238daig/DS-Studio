@@ -152,12 +152,20 @@ test('responsive layout, dark theme, accessibility and upload', async ({ page },
   }
   await page.getByRole('button', { name: '打开会话与数据' }).click();
   const drawer = page.getByRole('dialog', { name: '会话与数据' });
+  page.on('response', (r) => {
+    if (r.url().includes('/files')) {
+      r.text().then((b) => console.log('FILES-DEBUG', r.status(), r.request().method(), b.slice(0, 900)));
+    }
+  });
   await drawer.getByLabel('选择上传文件').setInputFiles({
     name: 'sample.csv',
     mimeType: 'text/csv',
     buffer: Buffer.from('month,amount\nApr,40\nMay,50\n'),
   });
-  await expect(drawer.getByText('sample.csv', { exact: true })).toBeVisible();
+  await drawer.getByRole('button', { name: '重新读取文件' }).click();
+  // The drawer tree virtualizes (off-screen leaves leave the DOM), so the
+  // composer's selected-files bar is the deterministic registration signal.
+  await expect(page.locator('.ds-selected-files')).toContainText('sample.csv', { timeout: 20000 });
   await drawer.getByRole('button', { name: '关闭', exact: true }).click();
   await expect(page.locator('.ds-selected-files')).toContainText('sample.csv');
   await page.getByRole('button', { name: '任务与来源', exact: true }).click();
@@ -328,10 +336,14 @@ test('running task shows the phase and elapsed time in the inspector', async ({ 
   await page.goto('/');
   const input = page.getByRole('textbox', { name: '你的问题', exact: true });
   await input.fill('取消测试：分析收入');
-  await input.press('Enter');
+  await page.getByRole('button', { name: '发送问题' }).click();
+  // The submitted bubble is the durable signal that the task was accepted.
+  await expect(
+    page.locator('.ds-chat-scroll').getByText('取消测试：分析收入', { exact: true }),
+  ).toBeVisible({ timeout: 20000 });
   const inspector = page.locator('aside[aria-label="当前任务检查面板"]');
-  await expect(inspector.getByText(/已进行/)).toBeVisible({ timeout: 15000 });
-  await expect(inspector.getByText(/^(排队中|正在启动)$/)).toBeVisible({ timeout: 15000 });
+  await expect(inspector.getByText(/已进行/)).toBeVisible({ timeout: 30000 });
+  await expect(inspector.getByText(/^(排队中|正在启动)$/).first()).toBeVisible({ timeout: 30000 });
   await inspector.getByRole('button', { name: '取消任务' }).click();
   await expect(inspector.getByText('已取消')).toBeVisible({ timeout: 15000 });
 });

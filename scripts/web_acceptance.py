@@ -27,7 +27,7 @@ def runner(task, store, event, cancelled):
     event('delegation', '主 Agent 将任务分配给数据分析 Agent', role='main', target='analyst')
     if '需要补充示例' in task.request and not task.parent_task_id:
         return {'status':'waiting_user','final_response':'请确认需要分析的月份。'}
-    for _ in range(15 if '取消' in task.request else 3):
+    for _ in range(40 if '取消' in task.request else 3):
         if cancelled():
             raise InterruptedError('Cancelled')
         time.sleep(.15)
