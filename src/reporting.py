@@ -22,6 +22,7 @@ from openpyxl.styles import Font, PatternFill
 from PIL import Image
 from src.chart_svg import CHART_RENDERING, chart_csp, inline_svg, interaction_script
 
+from src.answers import identifier_tokens, unbound_numbers
 from src.schemas import (AnalysisResult, ReportChartEdit, ReportSectionEdit, ReportLayout, ReportRevisionPatch,
                          ReportResult, ReportTextReplacement, TaskSpec, new_id)
 from pydantic import ValidationError
@@ -327,8 +328,11 @@ class ReportService:
         residue = TOKEN.sub('', value)
         if '{{metric:' in residue:
             raise NeedAnalysis('指标占位符格式错误，请使用 {{metric:analysis_id:metric_key}}。', 'invalid_placeholder')
-        if NUMBER.search(residue):
-            raise NeedAnalysis('报告文字包含未绑定数值，请改用 metric_refs 或指标占位符引用已验证指标。', 'unbound_prose')
+        offenders = unbound_numbers(residue, identifier_tokens(analyses.values()))
+        if offenders:
+            raise NeedAnalysis('报告文字包含未绑定数值：' + '、'.join(offenders[:6]) +
+                '；统计数值请改用 metric_refs 或指标占位符引用已验证指标，'
+                '数据中真实存在的年份、分组名、列名等标识可直接书写。', 'unbound_prose')
         return self._clean(TOKEN.sub(lambda m: self._metric(m[1], m[2], analyses), value))
 
     def _default_summary(self, analyses, request=''):

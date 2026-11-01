@@ -907,9 +907,68 @@ def main() -> None:
             uploaded = []
         files = {item['file_id']: item for item in kb + uploaded if item.get('file_id')}
         st.markdown('<div class="ds-side-label">分析数据</div>', unsafe_allow_html=True)
-        st.multiselect('选择 KB 或上传文件', list(files),
-            format_func=lambda fid: ('KB · ' if files[fid].get('source') == 'kb' else '') + name_of(files[fid]),
-            key='selected_files', label_visibility='collapsed', placeholder='选择文件或知识库数据')
+
+        # 确保 selected_files 已初始化
+        if 'selected_files' not in st.session_state:
+            st.session_state['selected_files'] = []
+
+        # 按文件夹分组文件
+        from collections import defaultdict
+        folders = defaultdict(list)
+        root_files = []
+
+        for fid, item in files.items():
+            if item.get('source') == 'kb':
+                path = (item.get('relative_path') or '').replace('\\', '/')
+                if '/' in path:
+                    # 提取目录路径
+                    dir_path = path.rsplit('/', 1)[0].replace('KB/', '')
+                    folders[dir_path].append((fid, item))
+                else:
+                    root_files.append((fid, item))
+            else:
+                # 上传文件单独显示
+                folders['上传文件'].append((fid, item))
+
+        # 显示根目录文件（KB 根目录）
+        if root_files:
+            st.caption('📚 知识库根目录', help='KB 根目录下的文件')
+            for fid, item in root_files:
+                name = name_of(item)
+                is_selected = fid in st.session_state['selected_files']
+                label = f'{"☑️" if is_selected else "⬜"} {name}'
+                if st.checkbox(label, value=is_selected, key=f'file_{fid}'):
+                    if fid not in st.session_state['selected_files']:
+                        st.session_state['selected_files'].append(fid)
+                else:
+                    if fid in st.session_state['selected_files']:
+                        st.session_state['selected_files'].remove(fid)
+
+        # 显示文件夹
+        for folder_name in sorted(folders.keys()):
+            # 文件夹图标
+            folder_icon = '📤' if folder_name == '上传文件' else '📁'
+            folder_count = len(folders[folder_name])
+            with st.expander(f'{folder_icon} {folder_name} ({folder_count})', expanded=False):
+                for fid, item in folders[folder_name]:
+                    name = name_of(item)
+                    size = item.get('size', 0)
+                    if size > 0:
+                        size_str = f'({size / 1024:.1f} KB)' if size < 1024 * 1024 else f'({size / 1024 / 1024:.1f} MB)'
+                    else:
+                        size_str = ''
+
+                    is_selected = fid in st.session_state['selected_files']
+                    label = f'{"☑️" if is_selected else "⬜"} {name} {size_str}'
+                    if st.checkbox(label, value=is_selected, key=f'file_{fid}'):
+                        if fid not in st.session_state['selected_files']:
+                            st.session_state['selected_files'].append(fid)
+                    else:
+                        if fid in st.session_state['selected_files']:
+                            st.session_state['selected_files'].remove(fid)
+
+        if st.session_state.get('selected_files'):
+            st.caption(f'已选择 {len(st.session_state["selected_files"])} 个文件', help='点击文件名勾选或取消')
         if database_enabled:
             render_database_picker(session_id)
         with st.expander('上传与知识库', icon=':material/folder_open:'):
@@ -1068,11 +1127,29 @@ def main() -> None:
             for item in selected_files:
                 render_file_profile(item)
         all_files = list({item['file_id']: item for item in kb + uploaded}.values())
+        # 按目录分组排序：先按目录，再按文件名
+        all_files.sort(key=lambda item: (
+            (item.get('relative_path', '').replace('\\', '/').rsplit('/', 1)[0] if '/' in item.get('relative_path', '') else ''),
+            name_of(item)
+        ))
         with st.expander(f'全部可用文件 · {len(all_files)} 份', expanded=not selected_files):
             if all_files:
-                st.dataframe([{'名称': name_of(item), '来源': '知识库' if item.get('source') == 'kb' else '本次上传',
-                    '大小': human_size(item.get('size', 0)), '解析状态': item.get('profile_status', '已登记')}
-                    for item in all_files], hide_index=True, width='stretch')
+                rows = []
+                for item in all_files:
+                    path = (item.get('relative_path') or '').replace('\\', '/')
+                    if '/' in path:
+                        dir_part = path.rsplit('/', 1)[0].replace('KB/', '')
+                        folder = f'📁 {dir_part}'
+                    else:
+                        folder = '📚 根目录'
+                    rows.append({
+                        '目录': folder,
+                        '名称': name_of(item),
+                        '来源': '知识库' if item.get('source') == 'kb' else '本次上传',
+                        '大小': human_size(item.get('size', 0)),
+                        '解析状态': item.get('profile_status', '已登记')
+                    })
+                st.dataframe(rows, hide_index=True, width='stretch')
             else:
                 st.caption('还没有文件。在左侧上传数据，或刷新知识库。')
 

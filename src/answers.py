@@ -21,6 +21,21 @@ NUMBER = re.compile(r'\d|百分之|[零〇一二两三四五六七八九十百�
                     r'[零〇一二两三四五六七八九十百千万亿](?:倍|成|个|项|行|列|分|元|[%％])|'
                     r'(?:为|是|等于|约|达到|超过|低于|高于|至少|最多|合计|共|均值|平均值|总额|数量|占比)'
                     r'\s*[零〇一二两三四五六七八九十百千万亿](?=$|[。；，、%％\s）)])')
+# Number-shaped tokens (superset of NUMBER) used to tell identifiers from
+# claims: "2021年"/"第1组" name real data groups, while "999"/"为三" assert a
+# statistic. Time-unit tails (月日时分) stay out: "3个月"/"12月" usually states
+# a duration or count, which must stay bound.
+NUMERIC_TOKEN = re.compile(
+    r'\d+(?:[.,/－—~～-]\d+)*[%％]?[年季度期组项名号批]?'
+    r'|百分之[零〇一二两三四五六七八九十百千万亿]+'
+    r'|负?[零〇一二两三四五六七八九十百千万亿]{2,}'
+    r'|[零〇一二两三四五六七八九十百千万亿]+点[零〇一二两三四五六七八九十百千万亿]+'
+    r'|[零〇一二两三四五六七八九十百千万亿](?:倍|成|个|项|行|列|分|元|[%％])'
+    r'|负?[零〇一二两三四五六七八九十百千万亿](?=$|[。；，、%％\s）)])'
+    r'|(?:为|是|等于|约|达到|超过|低于|高于|至少|最多|合计|共|均值|平均值|总额|数量|占比)'
+    r'\s*[零〇一二两三四五六七八九十百千万亿](?=$|[。；，、%％\s）)])')
+NUMERIC_TAIL = '年季度期组项名号批%％'
+DEFINITION_ID_KEYS = re.compile(r'(?:^|_)ids?$', re.I)
 META = {'source_rows', 'result_rows', 'source_characters', 'excerpt_characters'}
 OPERATIONS = {
     'mean': r'平均|均值|\b(?:mean|avg|average)\b',
@@ -190,6 +205,81 @@ def automatic_refs(runtime, ids) -> list[ReportMetricReference]:
     return refs
 
 
+def _definition_texts(value, result: list[str]) -> None:
+    if isinstance(value, str):
+        result.append(value)
+    elif isinstance(value, (list, tuple)):
+        for item in value:
+            _definition_texts(item, result)
+    elif isinstance(value, dict):
+        for key, item in value.items():
+            # Hex execution/artifact/file identifiers are not data identifiers;
+            # their digit runs must never enter the trusted corpus.
+            if isinstance(key, str) and DEFINITION_ID_KEYS.search(key):
+                continue
+            if isinstance(key, str):
+                _definition_texts(key, result)
+            _definition_texts(item, result)
+
+
+def identifier_tokens(analyses, extra_texts=()) -> set[str]:
+    """Numeric tokens that name registered results, not free-form claims.
+
+    Sources are task-registered metadata only: metric keys, metric definitions
+    (column names, group/filter values and the analyst's written definitions)
+    plus executor-written labels and input file names passed as extra_texts.
+    Registered metric VALUES stay out so a statistic can never be typed
+    unbound just because it was also computed.
+    """
+    texts: list[str] = []
+    for analysis in analyses:
+        texts.extend(str(key) for key in getattr(analysis, 'metrics', {}) or {})
+        for definition in (getattr(analysis, 'metric_definitions', {}) or {}).values():
+            _definition_texts(definition, texts)
+    texts.extend(str(text) for text in extra_texts)
+    trusted = set()
+    for text in texts:
+        for token in NUMERIC_TOKEN.findall(text):
+            trusted.add(token)
+            trusted.add(token.rstrip(NUMERIC_TAIL))
+    return {token for token in trusted if token}
+
+
+def runtime_identifier_tokens(runtime) -> set[str]:
+    store = getattr(runtime, 'store', None)
+    ids = list(dict.fromkeys(list(getattr(runtime, 'allowed_analysis_ids', []) or []) +
+                             list(getattr(runtime, 'analyses', []) or [])))
+    analyses = []
+    for aid in ids:
+        try:
+            analyses.append(runtime.authorize_analysis(aid))
+        except StoreError:
+            if store is not None:
+                try:
+                    analyses.append(store.get_analysis(aid, runtime.task.session_id))
+                except StoreError:
+                    continue
+    extra = list(getattr(runtime, 'trusted_metric_labels', {}).values())
+    if store is not None:
+        for analysis in analyses:
+            for fid in getattr(analysis, 'input_versions', {}) or {}:
+                try:
+                    extra.append(Path(store.get_file(fid, runtime.task.session_id)['name']).stem)
+                except StoreError:
+                    continue
+    return identifier_tokens(analyses, extra)
+
+
+def unbound_numbers(text: str, trusted: set[str]) -> list[str]:
+    offenders = []
+    for token in NUMERIC_TOKEN.findall(text):
+        if token in trusted or token.rstrip(NUMERIC_TAIL) in trusted:
+            continue
+        if token not in offenders:
+            offenders.append(token)
+    return offenders
+
+
 def validate_refs(runtime, refs) -> list[ReportMetricReference]:
     result = []
     for ref in refs:
@@ -201,7 +291,11 @@ def validate_refs(runtime, refs) -> list[ReportMetricReference]:
         if not relevant_metric(analysis, ref.metric_key, runtime.task.request):
             continue
         if ref.label and ref.label != ref.metric_key and NUMBER.search(ref.label):
-            raise StoreError('指标标签只能写定性名称，不能填入未绑定数值；含数字的列名可省略label。', 422, 'invalid_answer_label')
+            # Labels stay qualitative even for data identifiers: the app renders
+            # years/group names from metric keys or executor-written labels, so
+            # a numeric label can only add an unverified claim.
+            raise StoreError('指标标签只能写定性名称，不能填入数值；'
+                             '年份、分组名等标识请省略label由应用渲染。', 422, 'invalid_answer_label')
         if (ref.analysis_id, ref.metric_key) not in {(item.analysis_id, item.metric_key) for item in result}:
             result.append(ref)
     return result
@@ -213,8 +307,12 @@ def bound_template(runtime, text: str) -> tuple[str | None, list[ReportMetricRef
     residue = TOKEN.sub('', text)
     if '{{metric:' in residue:
         raise StoreError('请使用{{metric:analysis_id:metric_key}}绑定回答数值。', 422, 'invalid_answer_template')
-    if NUMBER.search(residue):
-        raise StoreError('回答含未绑定数值，请把数值替换为已验证指标占位符，不要重新计算。', 422, 'unbound_answer')
+    offenders = unbound_numbers(residue, runtime_identifier_tokens(runtime))
+    if offenders:
+        raise StoreError('回答含未绑定数值：' + '、'.join(offenders[:6]) +
+                         '；统计数值必须改用{{metric:analysis_id:metric_key}}占位符，'
+                         '数据中真实存在的年份、分组名、列名等标识可直接书写，不要重新计算。',
+                         422, 'unbound_answer')
     refs = [ReportMetricReference(analysis_id=match[1], metric_key=match[2]) for match in TOKEN.finditer(text)]
     selected = validate_refs(runtime, refs)
     if {(r.analysis_id, r.metric_key) for r in refs} != {(r.analysis_id, r.metric_key) for r in selected}:

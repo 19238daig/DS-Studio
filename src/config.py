@@ -20,6 +20,9 @@ class Settings(BaseSettings):
     analyst_enable_thinking: bool = True
     report_enable_thinking: bool = False
     analyst_thinking_budget: int = 4096
+    main_temperature: float | None = 0.1
+    analyst_temperature: float | None = 0.1
+    report_temperature: float | None = 0.1
     main_max_output_tokens: int = 4096
     analyst_max_output_tokens: int = 8192
     report_max_output_tokens: int = 8192
@@ -71,6 +74,14 @@ class Settings(BaseSettings):
     def warm_executor_requires_validated_release(cls, value):
         if value:
             raise ValueError('Warm execution is not enabled in this release; keep WARM_EXECUTOR=false.')
+        return value
+
+    @field_validator('main_temperature', 'analyst_temperature', 'report_temperature', mode='before')
+    @classmethod
+    def temperature_off_omits_the_parameter(cls, value):
+        """Hosted models such as DashScope kimi-k3 reject any temperature value."""
+        if isinstance(value, str) and value.strip().lower() in {'', 'off', 'none'}:
+            return None
         return value
 
     @property

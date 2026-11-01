@@ -3,6 +3,7 @@ from pathlib import Path
 from unittest.mock import Mock
 
 import pytest
+pytest.importorskip('streamlit', reason='Legacy UI tests require the optional legacy-ui extra')
 from streamlit.testing.v1 import AppTest
 
 from src.client import ApiClient, ApiError

@@ -286,6 +286,24 @@ def test_report_validation_reason_distinguishes_revision_from_missing_data(conte
     assert not list((store.root / 'report').rglob('report.*'))
 
 
+def test_report_prose_allows_year_identifiers_registered_by_analysis(context):
+    store, task, fid, analysis = context
+    grouped = AnalysisResult(task_id=task.task_id, session_id=task.session_id,
+        input_versions=dict(analysis.input_versions),
+        metrics={'mean_va_2021': 24.95, 'mean_va_2022': 10.47},
+        metric_definitions={'mean_va_2021': {'definition': '2021年增加值累计增幅（%）月度均值'},
+                            'mean_va_2022': {'definition': '2022年增加值累计增幅（%）月度均值'}})
+    grouped = store.save_analysis(grouped)
+    token = '{{metric:' + grouped.analysis_id + ':mean_va_2021}}'
+    accepted = ReportService(store).generate(task, [analysis.analysis_id, grouped.analysis_id],
+        narrative={'summary': '2021年整体高于2022年，均值为' + token + '。'}, formats=['html'])
+    assert accepted.status == 'completed'
+    rejected = ReportService(store).generate(task, [analysis.analysis_id, grouped.analysis_id],
+        narrative={'summary': '2019年起波动加大，均值为' + token + '。'}, formats=['html'])
+    assert rejected.status == 'need_analysis'
+    assert rejected.validation_summary['reason_code'] == 'unbound_prose'
+
+
 def test_no_analysis_reason_and_bounded_default_budget(context, monkeypatch):
     store, task, _, _ = context
     result = ReportService(store).generate(task, [])

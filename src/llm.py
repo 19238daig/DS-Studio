@@ -12,6 +12,6 @@ def build_model(settings: Settings, role: str):
                       base_url=settings.base_url, use_responses_api=False,
                       max_tokens=getattr(settings, prefix + '_max_output_tokens'),
                       extra_body=extra, timeout=settings.model_timeout_seconds,
-                      max_retries=1, temperature=0.1,
+                      max_retries=2, temperature=getattr(settings, prefix + '_temperature'),
                       streaming=getattr(settings, 'model_streaming_enabled', False),
                       stream_usage=True if getattr(settings, 'model_streaming_enabled', False) else None)

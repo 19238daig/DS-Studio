@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 
 from src.schemas import MessageRequest, TaskSpec, new_id, utcnow
-from src.storage import FILE_TYPES, TERMINAL, Store, StoreError
+from src.storage import DEFAULT_SESSION_TITLE, FILE_TYPES, TERMINAL, Store, StoreError, auto_title
 
 
 class Services:
@@ -42,6 +42,8 @@ class Services:
         if key and len(key) > 128:
             raise StoreError('Idempotency key exceeds 128 characters', 422)
         payload = request.model_dump(exclude={'idempotency_key'})
+        if payload.get('base_report_id') is None:
+            payload.pop('base_report_id', None)
         # Keep pre-database idempotency digests stable for ordinary file tasks.
         for field in ('database_source_ids', 'database_tables'):
             if not payload[field]:
@@ -96,6 +98,27 @@ class Services:
                     tables = {source: list(names) for source, names in parent['spec'].get('database_tables', {}).items() if source in sources}
                     table_explicit = parent['spec'].get('constraints', {}).get('database_tables_explicit', bool(tables))
                 revision_plan = parent['spec'].get('constraints', {}).get('report_revision')
+            if request.base_report_id:
+                from src.reporting import ReportService
+                artifact = self.store.get_artifact(request.base_report_id)
+                if artifact.session_id != session_id or artifact.kind != 'report':
+                    raise StoreError('基础报告不属于当前会话。', 404, 'invalid_report_base')
+                original = TaskSpec.model_validate(self.store.get_task(artifact.task_id)['spec'])
+                base = ReportService(self.store).read_report(original, artifact.artifact_id)
+                if revision_plan and revision_plan.get('base_report_id') != base['report_id']:
+                    raise StoreError('不能切换已经锁定的报告版本。', 409, 'revision_base_changed')
+                for aid in base['analysis_ids']:
+                    evidence = self.store.get_analysis(aid, session_id)
+                    if ('file_ids' in request.model_fields_set and
+                            not set(evidence.input_versions).issubset(files)):
+                        raise StoreError('当前文件选择不涵盖基础报告的数据，请选择所需来源。', 403, 'file_not_selected')
+                analyses = list(dict.fromkeys([*base['analysis_ids'], *analyses]))
+                if not expected_outputs:
+                    expected_outputs = list(base['formats'])
+                if not revision_plan:
+                    revision_plan = dict(base_report_id=base['report_id'], base_report_hash=base['hash'],
+                        base_version=base['version'], base_analysis_ids=base['analysis_ids'],
+                        change_request=request.content, targets=[])
             if len(files) > self.store.settings.max_files_per_task:
                 raise StoreError('Too many files selected', 413, 'file_limit')
             size = 0
@@ -161,10 +184,15 @@ class Services:
                             parent_task_id=parent_id, expected_outputs=expected_outputs,
                             database_source_ids=sources, database_tables=tables,
                             constraints=constraints)
+            # Name the conversation after its first question; a manually chosen
+            # title (anything but the default) and follow-up turns are kept.
+            title = auto_title(request.content)
+            session = self.store.get_session(session_id)
+            if title and not session.get('messages') and session.get('title') == DEFAULT_SESSION_TITLE:
+                self.store.rename_session(session_id, title)
             message = self.store.append_message(session_id, 'user', request.content, task_id=spec.task_id, file_ids=files)
             return self.store.create_task(spec, message_id=message['message_id'], idempotency_key=key, request_digest=digest,
                                           kind='message', retry_of=retry_of)
-
     async def upload(self, session_id: str, uploads: list) -> list[dict]:
         self.store.get_session(session_id)
         if not uploads or len(uploads) > self.store.settings.max_files_per_task:

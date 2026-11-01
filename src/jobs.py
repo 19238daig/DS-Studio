@@ -327,7 +327,8 @@ class Worker:
                 if any(x['status'] not in TERMINAL for x in prior):
                     continue
                 claimed = self.store.update_task(task['task_id'], status='running', stage='starting', owner=self.owner,
-                                                 execution_id=new_id(), started_at=utcnow())
+                                                 execution_id=new_id(), started_at=utcnow(),
+                                                 estimate_seconds=self.store.estimate_seconds('message'))
                 self.store.add_event(task['task_id'], 'running', 'Worker 已领取任务')
                 from src.task_stream import best_effort_lifecycle
                 best_effort_lifecycle(self.store, task['task_id'], 'running')

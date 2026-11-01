@@ -1,4 +1,5 @@
-﻿$ErrorActionPreference = 'Stop'
+﻿param([switch]$IfIdle)
+$ErrorActionPreference = 'Stop'
 $projectRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $processFile = Join-Path $projectRoot '.runtime\processes.json'
 if (-not (Test-Path -LiteralPath $processFile)) {
@@ -15,6 +16,7 @@ if ($workerEntry -and (Get-CimInstance Win32_Process -Filter "ProcessId = $([int
         $health = Invoke-RestMethod -Uri "$($record.api_url)/api/v1/health" -TimeoutSec 3
         $activeTaskIds = @(@($health.worker.task_ids) + @($health.worker.task_id) | Where-Object { $_ } | Select-Object -Unique)
         if ($activeTaskIds.Count -gt 0) {
+            if ($IfIdle) { throw "Active tasks exist; services and tasks have been preserved." }
             foreach ($taskId in $activeTaskIds) {
                 $null = Invoke-RestMethod -Method Post -Uri "$($record.api_url)/api/v1/tasks/$taskId/cancel" -TimeoutSec 5
             }
@@ -34,18 +36,31 @@ if ($workerEntry -and (Get-CimInstance Win32_Process -Filter "ProcessId = $([int
             if (-not $terminated) { throw 'Worker 尚未确认任务终止。' }
         }
     } catch {
+        if ($IfIdle) { throw }
         throw '无法确认 Worker 任务和容器已停止，已保留服务与启动记录。请先恢复 API 或稍后再运行 stop.ps1。'
     }
 }
 $unmatched = $false
-foreach ($entry in @($record.processes) | Sort-Object @{Expression={ if ($_.name -eq 'worker') { 0 } elseif ($_.name -eq 'ui') { 1 } else { 2 } }}) {
+# Windows virtualenv launchers may own a second python.exe process. Stop only
+# descendants of the identity-checked process, rather than leaving its server
+# listening after the launcher exits. Verify each identity again before killing.
+function Stop-OwnedTree($Owner) {
+    foreach ($child in @(Get-CimInstance Win32_Process -Filter "ParentProcessId = $($Owner.ProcessId)")) {
+        if ($child.CreationDate -ge $Owner.CreationDate) { Stop-OwnedTree $child }
+    }
+    $current = Get-CimInstance Win32_Process -Filter "ProcessId = $($Owner.ProcessId)"
+    if ($current -and $current.CreationDate -eq $Owner.CreationDate -and $current.CommandLine -eq $Owner.CommandLine) {
+        Stop-Process -Id ([int]$current.ProcessId) -ErrorAction SilentlyContinue
+    }
+}
+foreach ($entry in @($record.processes) | Sort-Object @{Expression={ if ($_.name -eq 'worker') { 0 } elseif ($_.name -in @('ui','web-dev')) { 1 } else { 2 } }}) {
     $identity = Get-CimInstance Win32_Process -Filter "ProcessId = $([int]$entry.pid)"
     if (-not $identity) { continue }
     $sameTime = $identity.CreationDate.ToUniversalTime().ToString('o') -eq $entry.creationTime
     $sameExe = $identity.ExecutablePath -and ([System.IO.Path]::GetFullPath($identity.ExecutablePath) -eq [System.IO.Path]::GetFullPath($entry.executable))
     $sameCommand = $identity.CommandLine -eq $entry.commandLine
     if ($sameTime -and $sameExe -and $sameCommand -and $identity.CommandLine.Contains($entry.marker)) {
-        Stop-Process -Id ([int]$entry.pid) -ErrorAction SilentlyContinue
+        Stop-OwnedTree $identity
         Write-Host "已停止 $($entry.name)。"
     } else {
         $unmatched = $true

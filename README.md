@@ -1,6 +1,6 @@
 # DS Studio
 
-基于 **FastAPI + Streamlit + Deep Agents** 的本地数据分析工作台。通过对话分析 CSV、Excel、静态 HTML 或已授权的 PostgreSQL 数据，生成带交互 SVG 图表的 HTML / Excel 报告，并在后续对话中增量修改报告。
+基于 **React + FastAPI + Deep Agents** 的本地数据分析工作台。通过对话分析 CSV、Excel、静态 HTML 或已授权的 PostgreSQL 数据，生成带交互 SVG 图表的 HTML / Excel 报告，并在后续对话中增量修改报告。
 
 > 仓库只包含代码、配置模板和技能参考。不提供 API 密钥、分析数据集、知识库内容、聊天记录或生成报告。首次运行请自行配置模型服务并上传数据。
 
@@ -18,6 +18,7 @@
 
 ## 环境
 
+- Node.js **22.12+**，用于构建 React / TypeScript 前端。
 - Python **3.11–3.13**；项目已在 Windows + Python 3.13 环境验证。
 - Docker Desktop / Linux Engine，用于生成代码的隔离执行和图表导出。
 - 兼容 OpenAI Chat Completions 的模型服务；默认适配阿里云百炼 DashScope。
@@ -44,13 +45,22 @@ Copy-Item .env.example .env
 docker build --pull=false -t ds-analysis:local -f docker/Dockerfile docker
 ```
 
+构建 React 前端（首次运行或前端代码更新后）：
+
+```powershell
+cd frontend
+npm ci
+npm run build
+cd ..
+```
+
 启动工作台：
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts/start.ps1
 ```
 
-- 问答界面：<http://127.0.0.1:8501/>
+- React 问答界面：<http://127.0.0.1:8000/>（与 API 同源）
 - FastAPI 文档：<http://127.0.0.1:8000/docs>
 - 健康检查：<http://127.0.0.1:8000/api/v1/health>
 
@@ -60,15 +70,18 @@ powershell -ExecutionPolicy Bypass -File scripts/start.ps1
 powershell -ExecutionPolicy Bypass -File scripts/stop.ps1
 ```
 
-需要查看前台输出时，在三个终端分别启动：
+需要查看前台输出时，在两个终端分别启动：
 
 ```powershell
 .\.venv\Scripts\python.exe -m uvicorn src.api:app --host 127.0.0.1 --port 8000
 .\.venv\Scripts\python.exe worker.py
-.\.venv\Scripts\python.exe -m streamlit run app.py --server.address 127.0.0.1 --server.port 8501
 ```
 
-macOS / Linux 可使用 `.venv/bin/python` 分别执行上述三个 Python 入口；PowerShell 进程管理脚本主要面向 Windows。完整平台组合尚未全部验证。
+macOS / Linux 可使用 `.venv/bin/python` 分别执行上述两个 Python 入口；PowerShell 进程管理脚本主要面向 Windows。完整平台组合尚未全部验证。
+
+前端热更新开发：运行 `powershell -ExecutionPolicy Bypass -File scripts/dev.ps1`，打开 <http://127.0.0.1:5173/>，Vite 将 `/api` 代理到 FastAPI。生产模式不启动 Node 服务或 Streamlit。
+
+旧 `app.py` 仅作为历史入口保留；如需回归旧界面，另行安装 `pip install -e ".[legacy-ui]"`。
 
 ## 使用
 
@@ -96,7 +109,8 @@ macOS / Linux 可使用 `.venv/bin/python` 分别执行上述三个 Python 入�
 
 | 路径 | 用途 | 提交到 GitHub |
 | --- | --- | --- |
-| `app.py`、`src/`、`templates/` | 界面、API、Agent、数据与报告实现 | 是 |
+| `frontend/`、`src/`、`templates/` | React 界面、API、Agent、数据与报告实现 | 是 |
+| `app.py` | 旧 Streamlit 入口（可选历史回归） | 是 |
 | `config/`、`skills/`、`vendor/` | 提示词、项目适配和带许可证的技能参考 | 是 |
 | `db/migrations/`、`docker/`、`scripts/`、`tests/` | 迁移、沙箱、工具和自动化测试 | 是 |
 | `.env.example` | 无凭据的配置模板 | 是 |
@@ -113,7 +127,7 @@ UI/UX Pro Max 技能目录里的 CSV 是上游公开的设计参考目录，不�
 .\.venv\Scripts\python.exe scripts/check_publication.py
 ```
 
-测试使用临时工作区和合成数据；部分测试需要本机 PostgreSQL 工具或 Docker。真实模型诊断需要显式参数，可能产生服务商费用。详情见 [开发说明](docs/DEVELOPMENT.md)。
+测试使用临时工作区和合成数据；部分测试需要本机 PostgreSQL 工具或 Docker。真实模型诊断需要显式参数，可能产生服务商费用。前端验证在 `frontend/` 运行 `npm test`、`npm run typecheck` 和 `npm run test:e2e`；E2E 使用隔离 API / Worker，不调用付费模型。详情见 [开发说明](docs/DEVELOPMENT.md)。
 
 当前产品面向单用户本地运行，没有面向公网的完整多租户认证体系。不要直接暴露服务端口；请阅读 [安全说明](SECURITY.md)。模型生成的定性解释仍需人工判断，指标绑定与来源检查不等于证明所有结论正确。
 

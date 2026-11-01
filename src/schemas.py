@@ -21,6 +21,7 @@ class MessageRequest(Record):
     idempotency_key: str | None = Field(default=None, max_length=128)
     analysis_ids: list[str] = Field(default_factory=list)
     reply_to_task_id: str | None = None
+    base_report_id: str | None = Field(default=None, min_length=1, max_length=80)
     database_source_ids: list[str] = Field(default_factory=list, max_length=10)
     database_tables: dict[str, list[str]] = Field(default_factory=dict)
 

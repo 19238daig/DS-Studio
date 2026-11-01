@@ -1,6 +1,6 @@
 # 开发与验证
 
-应用代码在 `src/`，Streamlit 入口是 `app.py`，后台入口是 `worker.py`。
+React / TypeScript 前端在 `frontend/`，FastAPI 和 Agent 在 `src/`，后台入口是 `worker.py`。FastAPI 直接提供 `frontend/dist` 的静态构建；`app.py` 是可选的旧界面入口。
 Python 依赖与 Docker 分析依赖分别固定在两个 `requirements.lock` 文件。
 
 ## 测试
@@ -25,3 +25,31 @@ python -m pytest -q
 发布检查针对暂存区或指定提交中的实际 Git 对象，而不是仅检查磁盘文件。它会识别常见密钥模式、本机 `.env` 中可识别的长秘密值、禁止发布的路径和数据文件。不能据此保证不存在所有类型的私有信息，仍需人工审阅。
 
 本地设计草稿、历史验收 HTML / PDF 和性能试验目录不作为发行物上传。验证结果应注明测试范围与环境；不要把单次报告速度对比写成所有复杂分析均能达到的响应保证。
+
+## React 前端
+
+```powershell
+cd frontend
+npm ci
+npm run typecheck
+npm test
+npm run build
+npm run test:e2e
+```
+
+`test:e2e` 在 18180 端口启动真实 FastAPI 和 Worker，使用新建隔离工作区、合成 CSV 和确定性执行器，不读取用户数据、调用模型或覆盖既有会话。默认使用本机 Edge 无头浏览器；没有 Edge 时先执行 `npx playwright install chromium`，并去掉 `playwright.config.ts` 的 `channel`。截图、失败 trace、HTML 测试报告保存在 `frontend/test-results/` 和 `frontend/playwright-report/`，均不提交。
+
+开发入口为 `scripts/dev.ps1`，生产入口为 `scripts/start.ps1`，停止均使用 `scripts/stop.ps1`。生产入口只启动 API 和 Worker；Vite 的代理目标从启动脚本传入的 `DS_API_URL` 读取，不向浏览器暴露密钥。开发和生产模式不能同时使用同一工作区的 Worker。
+
+API 类型生成：
+
+```powershell
+.\.venv\Scripts\python.exe scripts/export_openapi.py
+cd frontend
+npm run generate:api
+npm run typecheck
+```
+
+`openapi.json` 是本地生成文件，不提交；`src/shared/api/generated.ts` 是已锁定的公开契约，修改后需要审阅差异。请求中的来源未提供与明确空数组保留不同语义；流重连只订阅已有任务。报告预览使用独立接口、来源校验与沙箱 iframe，不注入应用 DOM。
+
+React Router 使用实际可安装的 7.18.5，TypeScript 使用生成器兼容的 5.9.3，其余版本以 `frontend/package-lock.json` 为准。旧 Streamlit AppTest 仅在安装可选 `legacy-ui` 依赖时运行；新 UI 由 React 单元测试及浏览器验收覆盖。

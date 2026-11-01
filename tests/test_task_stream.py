@@ -28,6 +28,18 @@ def frames(text):
     return [json.loads(line[6:]) for line in text.splitlines() if line.startswith('data: ')]
 
 
+def test_tool_events_mirror_into_the_public_progress_stream(context):
+    from src.task_stream import lifecycle_event
+    store, task = context
+    published = lifecycle_event(store, task.task_id, 'tool',
+                                'analyst 正在执行 run_python', role='analyst', tool='run_python')
+    assert published is not None and published['kind'] == 'progress'
+    assert published['data']['text'] == 'analyst 正在执行 run_python'
+    assert published['role'] == 'analyst'
+    # Audit-only event types stay out of the public stream.
+    assert lifecycle_event(store, task.task_id, 'span_completed', 'x') is None
+
+
 def test_only_verified_content_and_fixed_protocol_fields_enter_stream(context, monkeypatch):
     store, task = context
     monkeypatch.setattr(store, 'add_event', lambda *a, **k: pytest.fail('stream must not use the audit journal'))

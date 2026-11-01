@@ -78,6 +78,62 @@ def redact(value: Any, store: Store) -> str:
     return re.sub(r'sk-[A-Za-z0-9_-]{8,}', '[REDACTED]', text)[:4000]
 
 
+PROVIDER_FAILURE_MARKERS = (
+    'litellm', 'internalerror', 'openaiexception', 'apitimeout', 'apiconnection', 'ratelimit',
+    'rate limit', 'team_model_access_denied', 'connection error', 'timed out', 'permissiondenied',
+    'service unavailable', 'bad gateway',
+)
+
+# Transient model-service failures worth one application-level retry: the
+# SDK's own retries cover 429/5xx/connect, these markers catch proxied dumps.
+TRANSIENT_CALL_MARKERS = (
+    'timed out', 'timeout', 'connection error', 'connection reset', 'apiconnection',
+    'rate limit', 'ratelimit', 'error code: 429', 'error code: 500', 'error code: 502',
+    'error code: 503', 'error code: 504', 'internal server error', 'service unavailable',
+    'overloaded', 'temporarily unavailable',
+)
+
+
+def _transient_model_failure(exc: BaseException) -> bool:
+    low = str(exc).lower()
+    return any(marker in low for marker in TRANSIENT_CALL_MARKERS)
+
+
+MODEL_RETRY_BACKOFF_SECONDS = (2, 8, 20)
+
+
+def _model_call_with_retry(runtime, role: str, call_id: str, handler, request):
+    """Patient app-level retries for transient model-service failures.
+
+    A single 429/timeout/connection blip after the SDK retries would otherwise
+    kill the whole task mid-graph (there is deliberately no duplicate model
+    retry elsewhere). The escalating backoff bridges ~30s of proxy instability;
+    cancellation/timeout checks still run between attempts.
+    """
+    for attempt, backoff in enumerate(MODEL_RETRY_BACKOFF_SECONDS, start=1):
+        try:
+            return handler(request)
+        except Exception as exc:
+            if attempt == len(MODEL_RETRY_BACKOFF_SECONDS) or not _transient_model_failure(exc):
+                raise
+            runtime.event('model_retry', f'模型服务瞬时故障，{backoff} 秒后进行第 {attempt + 1} 次尝试',
+                          role=role, call_id=call_id, backoff_seconds=backoff)
+            time.sleep(backoff)
+            runtime.check()
+
+
+def friendly_failure(value: Any) -> str:
+    """User-facing failure text: provider/internal dumps become actionable
+    Chinese; application StoreError wording passes through unchanged. The raw
+    text stays available in the audit journal events."""
+    text = re.sub(r'sk-[A-Za-z0-9_-]{8,}', '[REDACTED]', str(value))[:4000]
+    low = text.lower()
+    if any(marker in low for marker in PROVIDER_FAILURE_MARKERS) or re.search(r'error code: [45]\d\d', low):
+        return ('模型服务调用失败，可能是服务商临时故障或请求被拒绝；'
+                '已完成的分析和报告均已保留，请稍后重试，或在工作台设置中更换模型。')
+    return text
+
+
 class BudgetExceeded(RuntimeError):
     pass
 
@@ -170,6 +226,11 @@ class TaskRuntime:
         # Only deterministic executors may populate these names from verified
         # catalog metadata. Free-form model labels still pass validate_refs.
         self.trusted_metric_labels: dict[tuple[str,str],str] = {}
+        # Per-task file metadata is pinned by input_versions hashes, so the
+        # APP_STATE ledger can cache schema lookups across model calls.
+        self._file_schema_cache: dict[str, dict] = {}
+        # Coordinator finish_task declarations; the 2nd+ ends the main loop.
+        self.finish_declarations = 0
         self.data = DataService(store)
         self.database = DatabaseService(store)
         self.memory = MemoryService(store)
@@ -494,6 +555,29 @@ class TaskRuntime:
             self.report_limitations.append(warning)
             self.report_validation('default_template', 'default_template_fallback', warning)
 
+    def _file_schema(self, fid: str) -> dict:
+        """Compact per-file schema for the APP_STATE ledger.
+
+        Columns are capped at 30; analysts retrieve the full list through
+        python_inputs, so every model call only needs the identifying head.
+        """
+        cached = self._file_schema_cache.get(fid)
+        if cached is None:
+            item = self.store.get_file(fid, self.task.session_id)
+            tables = []
+            for p in (item.get('profiles') or ([item['profile']] if item.get('profile') else [])):
+                columns = list(p.get('columns', []))[:30]
+                dtypes = p.get('dtypes', {})
+                tables.append({'table': p.get('sheet_or_table'), 'columns': columns,
+                    'dtypes': {c: dtypes[c] for c in columns if c in dtypes},
+                    'row_count': p.get('row_count'),
+                    'quality_warnings': p.get('quality_warnings', [])[:8],
+                    'columns_truncated': len(p.get('columns', [])) > 30})
+            cached = {'file_id': fid, 'name': item['name'],
+                'python_path': f'/input/{fid}{Path(item["name"]).suffix.lower()}', 'tables': tables}
+            self._file_schema_cache[fid] = cached
+        return cached
+
     def progress_context(self) -> dict:
         """Application-owned ledger, without prompts, raw data or private memory."""
         with self.lock:
@@ -522,15 +606,7 @@ class TaskRuntime:
                 'latest_report_id': self.prior_reports[0]['report_id'] if self.prior_reports else None,
                 'selected_database_source_ids': list(self.task.database_source_ids),
                 'selected_database_tables': dict(self.task.database_tables),
-                'selected_file_schemas': [{
-                    'file_id': fid, 'name': item['name'],
-                    'python_path': f'/input/{fid}{Path(item["name"]).suffix.lower()}',
-                    'tables': [{'table': p.get('sheet_or_table'), 'columns': p.get('columns', [])[:80],
-                                'dtypes': p.get('dtypes', {}), 'row_count': p.get('row_count'),
-                                'quality_warnings': p.get('quality_warnings', [])[:8],
-                                'columns_truncated': len(p.get('columns', [])) > 80}
-                               for p in (item.get('profiles') or ([item['profile']] if item.get('profile') else []))]}
-                    for fid in self.task.file_ids for item in [self.store.get_file(fid, self.task.session_id)]]}
+                'selected_file_schemas': [self._file_schema(fid) for fid in self.task.file_ids]}
 
 
 class BoundaryMiddleware(AgentMiddleware):
@@ -560,6 +636,8 @@ class BoundaryMiddleware(AgentMiddleware):
         if self.role == 'main' and target in {'analyst', 'report_designer'}:
             self.runtime.event('agent_assigned', f'主 Agent 将任务分配给 {target}',
                                role=self.role, target=target)
+            self.runtime.store.update_task(self.runtime.task.task_id,
+                                           stage='analysis' if target == 'analyst' else 'report')
             if target == 'analyst':
                 self.runtime.pending_handoff = None
         previous = (getattr(self.runtime.tool_context, 'role', 'unknown'), getattr(self.runtime.tool_context, 'name', 'tool'))
@@ -655,7 +733,7 @@ class BoundaryMiddleware(AgentMiddleware):
                     self.runtime.failed_tool_codes[semantic] = self.runtime.failed_tool_codes.get(semantic,0)+1
                     if self.runtime.failed_tool_codes[semantic]>=4:
                         raise BudgetExceeded(f'工具连续因同一原因失败且没有新增已验证结果（{code}），已停止无进展循环。'
-                            f'失败工具：{name}；具体原因：{redact(message,self.runtime.store)[:220]}。原报告和成功分析均已保留。')
+                            f'失败工具：{name}；具体原因：{friendly_failure(message)}。原报告和成功分析均已保留。')
             # Tool argument validation failures can be returned by ToolNode
             # before the application function (and safe()) is entered.
             if getattr(result, 'status', None) == 'error':
@@ -685,6 +763,15 @@ class BoundaryMiddleware(AgentMiddleware):
             # specialist need not spend another model call paraphrasing it.
             return ModelResponse(result=[AIMessage(content=json.dumps(self.runtime.pending_handoff, ensure_ascii=False))])
         terminal = self.runtime.terminal_result()
+        if (terminal is None and self.role == 'main' and self.runtime.finish_declarations >= 2
+                and self.runtime.finished_intent is not None and not self.runtime.report_required()):
+            # A repeated declared completion on the coordinator is terminal even
+            # when terminal_result() has no bound metrics to show: without this
+            # the model can re-declare finish_task dozens of times, burning a
+            # model call per loop. The FIRST declaration still lets the model
+            # continue (e.g. preference/memory flows), and run_task's
+            # delivery-gap check still applies after the graph ends.
+            terminal = {'status': 'completed', 'declared_intent': self.runtime.finished_intent}
         if terminal is not None:
             self.runtime.event('agent_stopped', '已保存结果，直接结束本轮 Agent', role=self.role,
                                status=terminal['status'])
@@ -736,7 +823,7 @@ class BoundaryMiddleware(AgentMiddleware):
         self.runtime.event('model_started', f'{self.role} 开始模型调用',
                            role=self.role, model=model, call_id=call_id)
         try:
-            response = handler(request)
+            response = _model_call_with_retry(self.runtime, self.role, call_id, handler, request)
         except Exception:
             self.runtime.event('model_failed', f'{self.role} 模型调用未返回完整用量',
                                role=self.role, model=model, call_id=call_id,
@@ -1047,14 +1134,25 @@ def main_tools(runtime: TaskRuntime):
         Application renders actual values; do not add incidental metadata/statistics to the answer.
         For a natural conclusion, answer may bind values with {{metric:analysis_id:metric_key}}.
         Do not type numeric claims directly; reuse registered metrics, never recompute to repair wording.
+        Identifiers that exist in the data (years, group names, column names) may be written literally;
+        only computed statistics must stay bound.
         """
         def finish():
+            runtime.finish_declarations += 1
             if metric_refs and intent != 'analysis':
                 raise StoreError('metric_refs仅用于analysis回答。', 422, 'invalid_answer')
             selected, template = [], None
             if intent == 'analysis':
                 runtime.answer_binding_needed = True
-                template, template_refs = bound_template(runtime, answer)
+                try:
+                    template, template_refs = bound_template(runtime, answer)
+                except StoreError as error:
+                    if error.code != 'unbound_answer':
+                        raise
+                    # The model wrapped verified values in prose with unbound
+                    # numbers; dropping the prose and binding real metrics
+                    # delivers actual values instead of looping on rewording.
+                    template, template_refs = None, []
                 selected = validate_refs(runtime, metric_refs or template_refs)
                 if not selected:
                     selected = automatic_refs(runtime, runtime.analyses or runtime.task.analysis_ids)
@@ -1360,6 +1458,7 @@ def analyst_tools(runtime: TaskRuntime):
         """Complete the entire delegated analysis using registered evidence only.
         Ordinary Q&A must bind only requested metric_refs (analysis_id,metric_key); OMIT answer and label by default,
         or answer placeholders {{metric:analysis_id:metric_key}}; no literal numeric claims.
+        Data identifiers (years, group names, column names) may be written literally in prose.
         Report preparation may omit refs: this returns analysis_ready to designer without a paraphrase call.
         """
         def finish():
@@ -1367,8 +1466,17 @@ def analyst_tools(runtime: TaskRuntime):
                 raise StoreError('No completed analysis to hand off',422,'missing_analysis')
             for aid in runtime.analyses: runtime.authorize_analysis(aid)
             if not runtime.report_required():
-                template, extracted = bound_template(runtime,answer)
-                refs = validate_refs(runtime,metric_refs or extracted)
+                try:
+                    template, extracted = bound_template(runtime, answer)
+                except StoreError as error:
+                    if error.code != 'unbound_answer':
+                        raise
+                    # Drop prose carrying unbound numbers; the app renders the
+                    # registered values instead of looping on rewording.
+                    template, extracted = None, []
+                refs = validate_refs(runtime, metric_refs or extracted)
+                if not refs:
+                    refs = automatic_refs(runtime, runtime.analyses)
                 if not refs and not wants_tables(runtime.task.request):
                     raise StoreError('Bind the requested verified metrics',422,'missing_answer_binding')
                 if runtime.scalar_batch_incomplete and len(refs)<runtime.scalar_batch_required:
@@ -1865,6 +1973,7 @@ def _perform_workflow(runtime, kind, request, analysis_ids=None, report_id=None)
             runtime.prepare_revision(report_id)
     def delegate(role, text):
         runtime.event('agent_assigned', '主 Agent 推进专家处理阶段', role='main', target=role)
+        runtime.store.update_task(runtime.task.task_id, stage='analysis' if role == 'analyst' else 'report')
         if getattr(runtime.store.settings,'sse_stream_enabled',False):
             from src.task_stream import best_effort_publish
             best_effort_publish(runtime.store,runtime.task.task_id,'progress',role=role,stage='analysis' if role=='analyst' else 'report',message='正在分析数据' if role=='analyst' else '正在生成报告')
@@ -2143,6 +2252,14 @@ def _delivery_gap(runtime: TaskRuntime) -> str | None:
 def run_task(task: TaskSpec, store: Store, event, cancel_check, *, model_factory=None) -> dict:
     runtime = TaskRuntime(task, store, event, cancel_check)
     runtime.check()
+    # Classify the estimate once the real request shape is known: report tasks
+    # take minutes while scalar QA finishes in seconds, and one mixed median
+    # always undershoots one of the two. The stage pipeline is published too so
+    # the UI can show 理解需求→数据分析→生成报告 with remaining steps upfront.
+    report_expected = bool(set(task.expected_outputs) & {'html', 'xlsx'}) or _report_requested(task, None)
+    stages = ['understanding', 'analysis'] + (['report'] if report_expected else [])
+    store.update_task(task.task_id, stage='understanding', stages=stages,
+                      estimate_seconds=store.estimate_seconds('message', report=report_expected))
     try:
         agents = build_agents(runtime, model_factory or build_model)
         session = store.get_session(task.session_id)
@@ -2183,9 +2300,9 @@ def run_task(task: TaskSpec, store: Store, event, cancel_check, *, model_factory
         elif runtime.clarification:
             result = {'status': 'waiting_user', 'final_response': redact(runtime.clarification, store), 'analysis_ids': runtime.analyses, 'report_ids': []}
         elif report_needed and not runtime.reports:
-            result = {'status': 'failed', 'final_response': runtime.last_error or '主 Agent 未完成报告工具交付，请重试本任务。已有分析和原报告已保留。', 'analysis_ids': runtime.analyses, 'report_ids': []}
+            result = {'status': 'failed', 'final_response': friendly_failure(runtime.last_error) if runtime.last_error else '主 Agent 未完成报告工具交付，请重试本任务。已有分析和原报告已保留。', 'analysis_ids': runtime.analyses, 'report_ids': []}
         elif runtime.scalar_batch_incomplete:
-            result = {'status':'failed','final_response':runtime.last_error or '多指标问题尚未全部完成，已保留成功结果，不能仅返回其中一项。',
+            result = {'status':'failed','final_response':friendly_failure(runtime.last_error) if runtime.last_error else '多指标问题尚未全部完成，已保留成功结果，不能仅返回其中一项。',
                       'analysis_ids':runtime.analyses,'report_ids':[]}
         elif runtime.analyses or runtime.answer_metric_refs or (runtime.reports and runtime.allowed_analysis_ids):
             ids = (list(dict.fromkeys(runtime.report_analysis_ids)) if runtime.reports else
@@ -2226,7 +2343,7 @@ def run_task(task: TaskSpec, store: Store, event, cancel_check, *, model_factory
             if runtime.report_revision_info:
                 result['report_revision'] = runtime.report_revision_info
         elif data_needed:
-            result = {'status': 'failed', 'final_response': runtime.last_error or '主 Agent 未完成分析工具调用或有效指标绑定，请重试本任务。', 'analysis_ids': [], 'report_ids': []}
+            result = {'status': 'failed', 'final_response': friendly_failure(runtime.last_error) if runtime.last_error else '主 Agent 未完成分析工具调用或有效指标绑定，请重试本任务。', 'analysis_ids': [], 'report_ids': []}
         elif (gap == 'preference' or _preference_requested(task, runtime.finished_intent)) and not runtime.preference_saved:
             result = {'status': 'failed', 'final_response': '偏好尚未成功保存，请重试本任务。', 'analysis_ids': [], 'report_ids': []}
         else:
@@ -2240,7 +2357,20 @@ def run_task(task: TaskSpec, store: Store, event, cancel_check, *, model_factory
                 getattr(store.settings,'sse_stream_enabled',False)):
             try:
                 from src.task_stream import best_effort_publish
-                best_effort_publish(store,task.task_id,'verified_answer_segment',text=result['final_response'],verified=True)
+                # Stream the validated answer in sentence chunks so the chat
+                # renders progressively instead of one late block; the values
+                # are already bound, so chunks stay verified.
+                chunks = [c for c in re.split(r'(?<=[。！？；\n])', result['final_response']) if c]
+                merged = []
+                for chunk in chunks:
+                    if not chunk.strip() and merged:
+                        merged[-1] += chunk  # keep blank-line spacing inside a frame
+                    elif chunk.strip():
+                        merged.append(chunk)
+                if len(merged) > 80:
+                    merged = merged[:79] + [''.join(merged[79:])]
+                for chunk in merged or [result['final_response']]:
+                    best_effort_publish(store,task.task_id,'verified_answer_segment',text=chunk,verified=True)
             except Exception:
                 # A progress channel cannot turn an already validated delivery
                 # into a failed business task; canonical job final is durable.
@@ -2251,4 +2381,6 @@ def run_task(task: TaskSpec, store: Store, event, cancel_check, *, model_factory
         raise
     except Exception as exc:
         runtime.memory.finalize(task.task_id, success=False)
-        return {'status': 'failed', 'final_response': redact(exc, store), 'error': redact(exc, store), 'analysis_ids': runtime.analyses, 'report_ids': [], 'tool_calls': runtime.calls}
+        # Raw provider dumps stay in the audit journal (already appended as
+        # model_failed/tool_error events); the task record carries readable text.
+        return {'status': 'failed', 'final_response': friendly_failure(exc), 'error': friendly_failure(exc), 'analysis_ids': runtime.analyses, 'report_ids': [], 'tool_calls': runtime.calls}

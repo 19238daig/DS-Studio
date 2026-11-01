@@ -8,6 +8,7 @@ import os
 import re
 import shutil
 import time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -19,6 +20,15 @@ from src.schemas import AnalysisResult, Artifact, TaskSpec, new_id, utcnow
 TERMINAL = {'succeeded', 'failed', 'cancelled', 'interrupted', 'waiting_user'}
 FILE_TYPES = {'.csv', '.xlsx', '.xls', '.html', '.htm'}
 KB_TYPES = FILE_TYPES | {'.md', '.txt'}
+DEFAULT_SESSION_TITLE = '新会话'
+
+
+def auto_title(content: str) -> str:
+    """Derive a sidebar title from the first question; '' keeps the default."""
+    text = re.sub(r'\s+', ' ', (content or '').strip())
+    if not text:
+        return ''
+    return text[:24] + ('…' if len(text) > 24 else '')
 
 
 class StoreError(Exception):
@@ -47,6 +57,9 @@ class Store:
         self.settings.ensure_directories()
         self.root = self.settings.root
         self.lock = FileLock(str(self.root / 'state/store.lock'), timeout=30)
+        # task_id -> (journal size the cache is valid for, last seq); avoids an
+        # O(n) re-read of the whole journal on every add_event.
+        self._event_seq_cache: dict[str, tuple[int, int]] = {}
 
     def safe_path(self, relative: str | Path, under: str | Path | None = None) -> Path:
         candidate = Path(relative)
@@ -229,6 +242,47 @@ class Store:
         with self.lock:
             return sorted([self.read_json(p.relative_to(self.root).as_posix()) for p in (self.root / 'state/tasks').glob('*.json')], key=lambda t: (t['created_at'], t['task_id']))
 
+    def estimate_seconds(self, kind: str = 'message', *, report: bool | None = None,
+                         sample: int = 10, within_days: float = 7) -> int | None:
+        """Median duration of recent succeeded tasks of a kind, as a rough ETA.
+
+        report=True/False restricts the sample to report-delivering / plain
+        tasks (report time dominates mixed medians); tasks older than
+        within_days are ignored so earlier runtime eras cannot poison it.
+        """
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=within_days)).isoformat()
+
+        def duration(task: dict) -> float | None:
+            end, start = task.get('finished_at'), task.get('started_at') or task.get('created_at')
+            if not end or not start:
+                return None
+            try:
+                seconds = (datetime.fromisoformat(end) - datetime.fromisoformat(start)).total_seconds()
+            except ValueError:
+                return None
+            return seconds if seconds > 0 else None
+
+        durations = []
+        for task in reversed(self.list_tasks()):
+            if task.get('kind') != kind or task.get('status') != 'succeeded':
+                continue
+            if (task.get('finished_at') or '') < cutoff:
+                break  # newest-first order: everything after the cutoff is older
+            is_report = bool((task.get('result') or {}).get('report_ids'))
+            if report is not None and is_report is not report:
+                continue
+            value = duration(task)
+            if value is not None:
+                durations.append(value)
+                if len(durations) >= sample:
+                    break
+        if not durations:
+            return None
+        durations.sort()
+        middle = len(durations) // 2
+        median = durations[middle] if len(durations) % 2 else (durations[middle - 1] + durations[middle]) / 2
+        return max(1, round(median))
+
     def update_task(self, task_id: str, **changes) -> dict:
         with self.lock:
             task = self.get_task(task_id)
@@ -241,16 +295,40 @@ class Store:
             self.write_json(f'state/tasks/{task_id}.json', task)
             return task
 
+    def _parseable_event_count(self, path: Path) -> int:
+        """Number of parseable journal entries — the seq basis for appending."""
+        if not path.exists():
+            return 0
+        count = 0
+        for line in path.read_text(encoding='utf-8').splitlines():
+            try:
+                json.loads(line)
+                count += 1
+            except json.JSONDecodeError:
+                continue  # A killed writer may leave an incomplete final line.
+        return count
+
     def add_event(self, task_id: str, event_type: str = 'progress', message: str = '', **details) -> dict:
+        """Append one journal entry without re-reading the whole file.
+
+        The per-task seq cache is validated against the file size, so an
+        append from another process (coordinator cancel, worker resume) is
+        always re-derived rather than trusted.
+        """
         with self.lock:
             self.get_task(task_id)
             path = self.safe_path(f'state/tasks/{identifier(task_id)}.events.jsonl')
-            events = self.list_events(task_id)
-            event = dict(seq=len(events) + 1, type=event_type, message=message, created_at=utcnow(), **details)
-            with path.open('a', encoding='utf-8') as stream:
-                stream.write(json.dumps(event, ensure_ascii=False, allow_nan=False) + '\n')
+            size = path.stat().st_size if path.exists() else 0
+            cached_size, seq = self._event_seq_cache.get(task_id, (None, 0))
+            if cached_size != size:
+                seq = self._parseable_event_count(path)
+            event = dict(seq=seq + 1, type=event_type, message=message, created_at=utcnow(), **details)
+            payload = (json.dumps(event, ensure_ascii=False, allow_nan=False) + '\n').encode('utf-8')
+            with path.open('ab') as stream:
+                stream.write(payload)
                 stream.flush()
                 os.fsync(stream.fileno())
+            self._event_seq_cache[task_id] = (size + len(payload), seq + 1)
             return event
 
     def list_events(self, task_id: str, after: int = 0) -> list[dict]:
@@ -351,24 +429,79 @@ class Store:
                     raise StoreError('Invalid database snapshot reference', 422, 'invalid_database_snapshot')
                 service.authorize_snapshot(task, ref)
 
+    def _purge_session_data(self, session_id: str, tasks: list[dict], keep_files: bool) -> None:
+        """Delete task-derived session data. Caller holds the store lock.
+
+        keep_files preserves uploaded files (input/ and the files index) so a
+        conversation can be cleared without losing its data sources; full
+        deletion removes them together with the session record.
+        """
+        sid = identifier(session_id)
+        bases = ('script_output', 'report') if keep_files else ('input', 'script_output', 'report')
+        for base in bases:
+            path = self.safe_path(Path(base) / sid, base)
+            if path.exists():
+                shutil.rmtree(path)
+        # Stream journals are session-owned derived output, never KB or
+        # memory. Match the same no-active-task deletion boundary.
+        streams = self.safe_path(Path('state/streams') / sid, 'state/streams')
+        if streams.exists():
+            shutil.rmtree(streams)
+        # The per-session KB snapshot cache written by backends.snapshot_root
+        # is derived data too; leave no stale catalog behind.
+        agent_kb = self.safe_path(Path('state/indexes/agent_kb') / sid, 'state/indexes')
+        if agent_kb.exists():
+            shutil.rmtree(agent_kb)
+        indexes = ('artifacts', 'analyses', 'database_queries') if keep_files else \
+            ('files', 'artifacts', 'analyses', 'database_queries')
+        for index in indexes:
+            self._save_index(index, {k: v for k, v in self._index(index).items() if v.get('session_id') != session_id})
+        for task in tasks:
+            for suffix in ('.json', '.events.jsonl'):
+                self.safe_path(f"state/tasks/{task['task_id']}{suffix}").unlink(missing_ok=True)
+
     def delete_session(self, session_id: str) -> None:
         with self.lock:
             self.get_session(session_id)
             tasks = [t for t in self.list_tasks() if t['session_id'] == session_id]
             if any(t['status'] not in TERMINAL for t in tasks):
                 raise StoreError('Cancel or finish active tasks before deleting session', 409, 'task_active')
-            for base in ('input', 'script_output', 'report'):
-                path = self.safe_path(Path(base) / identifier(session_id), base)
-                if path.exists():
-                    shutil.rmtree(path)
-            # Stream journals are session-owned derived output, never KB or
-            # memory. Match the same no-active-task deletion boundary.
-            streams = self.safe_path(Path('state/streams') / identifier(session_id), 'state/streams')
-            if streams.exists():
-                shutil.rmtree(streams)
-            for index in ('files', 'artifacts', 'analyses', 'database_queries'):
-                self._save_index(index, {k: v for k, v in self._index(index).items() if v.get('session_id') != session_id})
-            for task in tasks:
-                for suffix in ('.json', '.events.jsonl'):
-                    self.safe_path(f"state/tasks/{task['task_id']}{suffix}").unlink(missing_ok=True)
+            self._purge_session_data(session_id, tasks, keep_files=False)
             self.safe_path(f'state/sessions/{session_id}.json').unlink()
+
+    def clear_session(self, session_id: str) -> dict:
+        """Drop conversation history and task results; keep uploaded files and sources."""
+        with self.lock:
+            session = self.get_session(session_id)
+            tasks = [t for t in self.list_tasks() if t['session_id'] == session_id]
+            if any(t['status'] not in TERMINAL for t in tasks):
+                raise StoreError('Cancel or finish active tasks before clearing the conversation', 409, 'task_active')
+            self._purge_session_data(session_id, tasks, keep_files=True)
+            session['messages'], session['tasks'] = [], []
+            self.write_json(f'state/sessions/{session_id}.json', session)
+            return session
+
+    def rename_session(self, session_id: str, title: str) -> dict:
+        title = (title or '').strip()
+        if not title or len(title) > 200:
+            raise StoreError('会话标题不能为空且不超过200字。', 422, 'invalid_session_title')
+        with self.lock:
+            session = self.get_session(session_id)
+            session['title'] = title
+            self.write_json(f'state/sessions/{session_id}.json', session)
+            return session
+
+    def backfill_session_titles(self) -> None:
+        """Name default-titled sessions after their first user message.
+
+        Covers sessions created before auto-titling existed; manually renamed
+        sessions and message-less sessions are left alone. Idempotent.
+        """
+        with self.lock:
+            for session in self.list_sessions():
+                if session.get('title') != DEFAULT_SESSION_TITLE or not session.get('messages'):
+                    continue
+                first = next((m.get('content') or '' for m in session['messages'] if m.get('role') == 'user'), '')
+                title = auto_title(first)
+                if title:
+                    self.rename_session(session['session_id'], title)

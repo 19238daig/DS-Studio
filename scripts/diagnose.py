@@ -68,7 +68,7 @@ def main():
     parser.add_argument('--thinking', action='store_true', help='Verify analyst thinking/tool compatibility with a 256-token budget.')
     args = parser.parse_args()
     print(json.dumps({'python': sys.version.split()[0], 'docker': bool(shutil.which('docker')), 'git': bool(shutil.which('git'))}))
-    for package in ['deepagents', 'fastapi', 'streamlit', 'langchain-openai']:
+    for package in ['deepagents', 'fastapi', 'langchain-openai']:
         try:
             print(f'{package}=={importlib.metadata.version(package)}')
         except importlib.metadata.PackageNotFoundError:

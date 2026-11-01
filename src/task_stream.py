@@ -280,6 +280,12 @@ def finish(store, task_id):
 
 def lifecycle_event(store, task_id, event_type, message='', **details):
     """Small public lifecycle projection; raw audit details stay in audit logs."""
+    if event_type == 'tool':
+        # Per-tool movement keeps the chat live line visibly progressing during
+        # long computations; tool arguments/results stay in the audit journal.
+        role = details.get('role')
+        return publish(store, task_id, 'progress', role=role if role in ROLES else None,
+                       stage='tool', text=message or '正在执行分析步骤。')
     messages = {
         'running': '已开始处理。', 'profiling': '正在准备所选数据。',
         'profile_ready': '所选数据已就绪。', 'agent_assigned': '已分配处理任务。',

@@ -8,8 +8,8 @@ from src.agents import TaskRuntime, _data_answer, _report_requested, analyst_too
 from src.answers import bound_template, render_metrics
 from src.config import Settings
 from src.data import DataService
-from src.schemas import ReportMetricReference, TaskSpec
-from src.storage import Store
+from src.schemas import AnalysisResult, ReportMetricReference, TaskSpec
+from src.storage import Store, StoreError
 from test_agents import call, models
 from test_database_core import db_setup, isolated_postgres
 
@@ -120,19 +120,19 @@ def test_asked_row_count_is_business_answer_not_hidden_metadata(chat, question):
     assert _data_answer(runtime, [analysis.analysis_id]) == '数据行数：**3**。'
 
 
-def test_template_rejects_unbound_number_and_main_can_correct_without_reanalysis(chat):
+def test_unbound_answer_prose_falls_back_to_bound_metrics_without_looping(chat):
+    """Prose carrying unbound numbers is dropped; verified metrics deliver."""
     store, task, ids = chat
     analysis = DataService(store).analyze(task, ids[0], 'aggregate', aggregations={'pH': 'mean'})
     task.analysis_ids = [analysis.analysis_id]
     token = '{{metric:' + analysis.analysis_id + ':pH_mean}}'
     scripted, factory = models([
-        call('finish_task', {'intent': 'analysis', 'answer': '均值为' + token + '，另有999条记录。'}),
-        call('finish_task', {'intent': 'analysis', 'answer': 'pH平均值为' + token + '。'}, 'repair')])
+        call('finish_task', {'intent': 'analysis', 'answer': '均值为' + token + '，另有999条记录。'})])
     result = run_task(task, store, Mock(), lambda: False, model_factory=factory)
     assert result['status'] == 'completed', result
-    assert result['final_response'] == 'pH平均值为3.3。'
+    assert '3.3' in result['final_response'] and '999' not in result['final_response']
     assert len(store._index('analyses')) == 1
-    assert scripted['analyst']._index == 0 and scripted['main']._index == 2
+    assert scripted['analyst']._index == 0 and scripted['main']._index == 1
 
 
 def test_template_cannot_include_incidental_metadata(chat):
@@ -144,6 +144,117 @@ def test_template_cannot_include_incidental_metadata(chat):
         '均值{{metric:' + analysis.analysis_id + ':pH_mean}}，行数{{metric:' + analysis.analysis_id + ':source_rows}}。'})
     assert result['code'] == 'unrelated_answer_metric'
     assert runtime.answer_template is None
+
+
+def _year_analysis(store, task):
+    """A run_python-style grouped analysis whose keys/definitions name the years."""
+    grouped = AnalysisResult(task_id=task.task_id, session_id=task.session_id,
+        metrics={'mean_va_2021': 24.95, 'mean_va_2022': 10.47, 'n_2021': 11, 'n_2022': 11},
+        metric_definitions={'mean_va_2021': {'definition': '2021年增加值累计增幅（%）月度均值'},
+                            'mean_va_2022': {'definition': '2022年增加值累计增幅（%）月度均值'},
+                            'n_2021': {'definition': '2021年月度数据行数'},
+                            'n_2022': {'definition': '2022年月度数据行数'}})
+    return store.save_analysis(grouped)
+
+
+def test_bound_answer_allows_year_identifiers_registered_by_analysis(chat):
+    store, task, ids = chat
+    task.request = '分析不同年份的差异，说明关键发现'
+    grouped = _year_analysis(store, task)
+    task.analysis_ids = [grouped.analysis_id]
+    runtime = TaskRuntime(task, store, Mock(), lambda: False)
+    token = '{{metric:' + grouped.analysis_id + ':mean_va_2021}}'
+    template, refs = bound_template(runtime, '2021年最高，2022年回落，均值为' + token + '。')
+    assert template == '2021年最高，2022年回落，均值为24.95。'
+    assert [ref.metric_key for ref in refs] == ['mean_va_2021']
+
+
+def test_bound_answer_still_rejects_unbound_statistics_between_identifiers(chat):
+    store, task, ids = chat
+    task.request = '分析不同年份的差异，说明关键发现'
+    grouped = _year_analysis(store, task)
+    task.analysis_ids = [grouped.analysis_id]
+    runtime = TaskRuntime(task, store, Mock(), lambda: False)
+    token = '{{metric:' + grouped.analysis_id + ':mean_va_2021}}'
+    with pytest.raises(StoreError) as error:
+        bound_template(runtime, '2021年比2022年高出14.48个百分点，均值为' + token + '。')
+    assert error.value.code == 'unbound_answer'
+    assert '14.48' in str(error.value)
+
+
+def test_bound_answer_rejects_identifiers_absent_from_data(chat):
+    store, task, ids = chat
+    task.request = '分析不同年份的差异，说明关键发现'
+    grouped = _year_analysis(store, task)
+    task.analysis_ids = [grouped.analysis_id]
+    runtime = TaskRuntime(task, store, Mock(), lambda: False)
+    token = '{{metric:' + grouped.analysis_id + ':mean_va_2021}}'
+    with pytest.raises(StoreError) as error:
+        bound_template(runtime, '2019年起无明显差异，均值为' + token + '。')
+    assert error.value.code == 'unbound_answer'
+
+
+def test_finish_task_accepts_year_identifiers_in_conclusion(chat):
+    store, task, ids = chat
+    task.request = '分析不同年份的差异，说明关键发现'
+    grouped = _year_analysis(store, task)
+    task.analysis_ids = [grouped.analysis_id]
+    runtime = TaskRuntime(task, store, Mock(), lambda: False)
+    result = tools(runtime, main_tools)['finish_task'].invoke({'intent': 'analysis', 'answer':
+        '2021年整体高于2022年，增加值均值为{{metric:' + grouped.analysis_id + ':mean_va_2021}}。'})
+    assert result['status'] == 'recorded'
+    assert runtime.answer_template == '2021年整体高于2022年，增加值均值为24.95。'
+
+
+def test_repeated_general_declaration_ends_the_coordinator_loop(chat):
+    """A main model stuck re-declaring finish_task must stop at the 2nd call."""
+    store, task, ids = chat
+    task.request = '你是谁？简单介绍一下你能做什么。'
+    scripted, factory = models([
+        call('finish_task', {'intent': 'general', 'answer': '说明一。'}),
+        call('finish_task', {'intent': 'general', 'answer': '说明二。'}),
+        AIMessage(content='不应到达这里。'),
+    ])
+    result = run_task(task, store, Mock(), lambda: False, model_factory=factory)
+    assert result['status'] == 'completed', result
+    assert result['final_response'] == '说明二。'
+    assert scripted['main']._index == 2  # the canned terminal replaces the 3rd model call
+
+
+def test_finish_analysis_unbound_answer_falls_back_to_automatic_binding(chat):
+    store, task, ids = chat
+    analysis = DataService(store).analyze(task, ids[0], 'aggregate', aggregations={'pH': 'mean'})
+    runtime = TaskRuntime(task, store, Mock(), lambda: False)
+    runtime.record_analysis(analysis)
+    result = tools(runtime, analyst_tools)['finish_analysis'].invoke(
+        {'answer': 'pH均值为3.3，另外999条记录。'})
+    assert result['status'] == 'analysis_ready', result
+    assert [ref.metric_key for ref in runtime.answer_metric_refs] == ['pH_mean']
+
+
+def test_task_stage_tracks_the_active_phase(chat):
+    store, task, ids = chat
+    analysis = DataService(store).analyze(task, ids[0], 'aggregate', aggregations={'pH': 'mean'})
+    task.analysis_ids = [analysis.analysis_id]
+    seen = {}
+
+    def delegate_probe(_):
+        seen['main'] = store.get_task(task.task_id)['stage']
+        return call('task', {'subagent_type': 'analyst', 'description': '查询pH均值'})
+
+    def analyst_probe(_):
+        seen['analyst'] = store.get_task(task.task_id)['stage']
+        return AIMessage(content='已登记')
+
+    scripted, factory = models([
+        delegate_probe,
+        AIMessage(content='已完成。'),
+        call('finish_task', {'intent': 'analysis', 'metric_refs': [
+            {'analysis_id': analysis.analysis_id, 'metric_key': 'pH_mean'}]}),
+    ], analyst=[analyst_probe, AIMessage(content='已登记')])
+    result = run_task(task, store, Mock(), lambda: False, model_factory=factory)
+    assert result['status'] == 'completed', result
+    assert seen == {'main': 'understanding', 'analyst': 'analysis'}
 
 
 def test_two_different_means_are_not_compared_as_the_same_measure(chat):

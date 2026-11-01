@@ -20,7 +20,9 @@ def test_health_reports_effective_execution_limits(client):
     settings=client.app.state.store.settings
     settings.max_tool_calls,settings.max_agent_steps,settings.task_timeout_seconds=256,1024,3600
     assert client.get('/api/v1/health').json()['limits']=={
-        'max_tool_calls':256,'max_agent_steps':1024,'task_timeout_seconds':3600}
+        'max_tool_calls':256,'max_agent_steps':1024,'task_timeout_seconds':3600,
+        'max_upload_bytes':settings.max_upload_bytes,'max_task_input_bytes':settings.max_task_input_bytes,
+        'max_files_per_task':settings.max_files_per_task}
 
 
 def test_question_logs_rebuild_from_full_durable_events(client):
@@ -59,6 +61,60 @@ def test_upload_names_limits_and_cross_session(client):
     other = new_session(client)
     result = client.post(f'/api/v1/sessions/{other}/messages', json={'content': 'test', 'file_ids': [files[0]['file_id']]})
     assert result.status_code == 404
+
+
+def test_rename_session_endpoint_validates_and_persists(client):
+    sid = new_session(client)
+    renamed = client.patch(f'/api/v1/sessions/{sid}', json={'title': ' 工业分析 '})
+    assert renamed.status_code == 200 and renamed.json()['title'] == '工业分析'
+    items = client.get('/api/v1/sessions?summary=true').json()['items']
+    assert items[0]['title'] == '工业分析'
+    assert client.patch('/api/v1/sessions/missing', json={'title': 'x'}).status_code == 404
+    assert client.patch(f'/api/v1/sessions/{sid}', json={'title': '  '}).status_code == 422
+    assert client.patch(f'/api/v1/sessions/{sid}', json={'title': 'x' * 201}).status_code == 422
+
+
+def test_clear_session_endpoint_keeps_files_and_drops_history(client):
+    sid = new_session(client)
+    store = client.app.state.store
+    client.post(f'/api/v1/sessions/{sid}/files', files={'files': ('a.csv', b'x\n1\n')})
+    tid = client.post(f'/api/v1/sessions/{sid}/messages', json={'content': '我的问题'}).json()['task_id']
+    refused = client.delete(f'/api/v1/sessions/{sid}/messages')
+    assert refused.status_code == 409 and refused.json()['code'] == 'task_active'
+    # Uploads enqueue a profile task; cancel every non-terminal session task.
+    pending = [t['task_id'] for t in store.list_tasks()
+               if t['session_id'] == sid and t['status'] not in
+               {'succeeded', 'failed', 'cancelled', 'interrupted', 'waiting_user'}]
+    assert pending and tid in pending
+    for task_id in pending:
+        assert client.post(f'/api/v1/tasks/{task_id}/cancel').status_code in (200, 202)
+
+    assert client.delete(f'/api/v1/sessions/{sid}/messages').status_code == 204
+    detail = client.get(f'/api/v1/sessions/{sid}').json()
+    assert detail['messages'] == [] and detail['tasks'] == [] and detail['question_logs'] == []
+    assert len(client.get(f'/api/v1/sessions/{sid}/files').json()['items']) == 1
+    assert not (store.root / 'state' / 'tasks' / f'{tid}.json').exists()
+    assert client.get(f'/api/v1/tasks/{tid}').status_code == 404
+    assert client.delete(f'/api/v1/sessions/{sid}/messages').status_code == 204
+    assert client.delete('/api/v1/sessions/missing/messages').status_code == 404
+
+
+def test_first_question_titles_the_session_automatically(client):
+    sid = client.post('/api/v1/sessions', json={}).json()['session_id']
+    client.post(f'/api/v1/sessions/{sid}/messages', json={'content': '分析不同年份的营收差异并生成报告'})
+    assert client.get(f'/api/v1/sessions/{sid}').json()['title'] == '分析不同年份的营收差异并生成报告'
+    # Follow-up turns never rename the session.
+    client.post(f'/api/v1/sessions/{sid}/messages', json={'content': '换成完全不同的另一个问题'})
+    assert client.get(f'/api/v1/sessions/{sid}').json()['title'] == '分析不同年份的营收差异并生成报告'
+    # Long questions are truncated; whitespace-only keeps the default title.
+    long_sid = client.post('/api/v1/sessions', json={}).json()['session_id']
+    client.post(f'/api/v1/sessions/{long_sid}/messages', json={'content': '长' * 30})
+    assert client.get(f'/api/v1/sessions/{long_sid}').json()['title'] == '长' * 24 + '…'
+    # A manually renamed session keeps its name.
+    named = client.post('/api/v1/sessions', json={}).json()['session_id']
+    client.patch(f'/api/v1/sessions/{named}', json={'title': '我的会话'})
+    client.post(f'/api/v1/sessions/{named}/messages', json={'content': '这个问题不应该改标题'})
+    assert client.get(f'/api/v1/sessions/{named}').json()['title'] == '我的会话'
 
 
 def test_upload_exact_limit_and_total_batch_limit(client):

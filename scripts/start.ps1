@@ -1,6 +1,7 @@
 ﻿param(
     [int]$ApiPort = 8000,
-    [int]$UiPort = 8501,
+    [int]$UiPort = 5173,
+    [switch]$Dev,
     [switch]$NoBrowser
 )
 $ErrorActionPreference = 'Stop'
@@ -11,14 +12,26 @@ $processFile = Join-Path $runtimePath 'processes.json'
 if (-not (Test-Path -LiteralPath $pythonPath)) {
     throw '缺少 .venv。请按 README 安装依赖后再启动。'
 }
-if ($ApiPort -lt 1 -or $ApiPort -gt 65535 -or $UiPort -lt 1 -or $UiPort -gt 65535 -or $ApiPort -eq $UiPort) {
-    throw 'API 和界面端口必须为不同的有效端口。'
+if ($ApiPort -lt 1 -or $ApiPort -gt 65535 -or ($Dev -and ($UiPort -lt 1 -or $UiPort -gt 65535 -or $ApiPort -eq $UiPort))) {
+    throw '请指定有效端口，开发模式的前后端端口必须不同。'
+}
+if (-not $Dev -and -not (Test-Path -LiteralPath (Join-Path $projectRoot 'frontend\dist\index.html'))) {
+    throw '尚未构建 React 前端。请进入 frontend 目录运行 npm ci 和 npm run build。'
+}
+$nodePath = $null
+if ($Dev) {
+    $nodePath = (Get-Command node -ErrorAction Stop).Source
+    if (-not (Test-Path -LiteralPath (Join-Path $projectRoot 'frontend\node_modules\vite\bin\vite.js'))) {
+        throw '缺少前端开发依赖。请进入 frontend 目录运行 npm ci。'
+    }
 }
 New-Item -ItemType Directory -Path $runtimePath -Force | Out-Null
 if (Test-Path -LiteralPath $processFile) {
     throw '已有本项目的启动记录。请先运行 scripts/stop.ps1，以免重复启动 Worker。'
 }
-foreach ($port in @($ApiPort, $UiPort)) {
+$ports = @($ApiPort)
+if ($Dev) { $ports += $UiPort }
+foreach ($port in $ports) {
     $listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, $port)
     try { $listener.Start() }
     catch { throw "端口 $port 已被占用，未启动服务。请检查占用程序或指定其他端口。" }
@@ -30,17 +43,17 @@ $runId = [guid]::NewGuid().ToString('N')
 $oldApiUrl = $env:DS_API_URL
 $env:DS_API_URL = "http://127.0.0.1:$ApiPort"
 
-function Start-TrackedProcess([string]$Name, [string[]]$Arguments, [string]$Marker) {
+function Start-TrackedProcess([string]$Name, [string[]]$Arguments, [string]$Marker, [string]$Executable = $pythonPath, [string]$WorkingDirectory = $projectRoot) {
     $outPath = Join-Path $runtimePath "$Name.stdout.log"
     $errPath = Join-Path $runtimePath "$Name.stderr.log"
-    $proc = Start-Process -FilePath $pythonPath -ArgumentList $Arguments -WorkingDirectory $projectRoot -WindowStyle Hidden -RedirectStandardOutput $outPath -RedirectStandardError $errPath -PassThru
+    $proc = Start-Process -FilePath $Executable -ArgumentList $Arguments -WorkingDirectory $WorkingDirectory -WindowStyle Hidden -RedirectStandardOutput $outPath -RedirectStandardError $errPath -PassThru
     Start-Sleep -Milliseconds 200
     $identity = Get-CimInstance Win32_Process -Filter "ProcessId = $($proc.Id)"
     if (-not $identity) { throw "$Name 启动后已退出。请检查 .runtime 下对应日志。" }
     $records.Add([pscustomobject]@{
         name = $Name
         pid = $proc.Id
-        executable = $pythonPath
+        executable = $Executable
         creationTime = $identity.CreationDate.ToUniversalTime().ToString('o')
         commandLine = $identity.CommandLine
         marker = $Marker
@@ -69,20 +82,25 @@ try {
         Start-Sleep -Milliseconds 500
     }
     if (-not $workerHealthy) { throw 'Worker 未在启动时限内发送心跳。请检查 .runtime/worker.stderr.log。' }
-    Start-TrackedProcess 'ui' @('-m', 'streamlit', 'run', 'app.py', '--server.address', '127.0.0.1', '--server.port', "$UiPort", '--server.headless', 'true', '--browser.gatherUsageStats', 'false') 'streamlit run app.py'
+    $webUrl = "http://127.0.0.1:$ApiPort"
+    if ($Dev) {
+        Start-TrackedProcess 'web-dev' @('node_modules/vite/bin/vite.js', '--host', '127.0.0.1', '--port', "$UiPort", '--strictPort') 'vite/bin/vite.js' $nodePath (Join-Path $projectRoot 'frontend')
+        $webUrl = "http://127.0.0.1:$UiPort"
+    }
     $uiHealthy = $false
     for ($attempt = 0; $attempt -lt 40; $attempt++) {
         try {
-            $null = Invoke-RestMethod -Uri "http://127.0.0.1:$UiPort/_stcore/health" -TimeoutSec 2
+            $page = Invoke-WebRequest -UseBasicParsing -Uri "$webUrl/" -TimeoutSec 2
+            if ($page.Content -notmatch '<div id="root">') { throw 'React 入口尚未就绪。' }
             $uiHealthy = $true
             break
         } catch { Start-Sleep -Milliseconds 500 }
     }
-    if (-not $uiHealthy) { throw '界面未在启动时限内通过健康检查。请检查 .runtime/ui.stderr.log。' }
-    Write-Host "数据工作台已启动：http://127.0.0.1:$UiPort"
+    if (-not $uiHealthy) { throw 'React 界面未通过启动检查。请检查 .runtime 下 API / web-dev 日志。' }
+    Write-Host "数据工作台已启动：$webUrl"
     Write-Host "API 文档：http://127.0.0.1:$ApiPort/docs"
     Write-Host '停止本次服务：.\scripts\stop.ps1'
-    if (-not $NoBrowser) { Start-Process "http://127.0.0.1:$UiPort" }
+    if (-not $NoBrowser) { Start-Process "$webUrl" }
 } catch {
     Write-Warning $_.Exception.Message
     if (Test-Path -LiteralPath $processFile) { & (Join-Path $PSScriptRoot 'stop.ps1') }

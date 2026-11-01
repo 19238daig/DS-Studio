@@ -5,9 +5,11 @@ import importlib
 import json
 import time
 from uuid import uuid4
+from pathlib import Path
 
 from fastapi import FastAPI, Header, Query, Request, UploadFile
 from fastapi.exceptions import RequestValidationError
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
 
@@ -17,6 +19,8 @@ from src.services import Services
 from src.storage import Store, StoreError, identifier
 from src.telemetry import summarize_task
 from src.report_catalog import list_report_versions
+from src.api_contracts import (SessionResponse, SessionListResponse, TaskResponse,
+    AcceptedTaskResponse, ArtifactListResponse, FileListResponse, EventPageResponse, DatabasePreviewResponse)
 
 
 class SessionRequest(BaseModel):
@@ -30,7 +34,7 @@ class DatabasePreviewRequest(BaseModel):
     limit: int = Field(default=20, ge=1, le=50)
 
 
-def create_app(settings: Settings | None = None) -> FastAPI:
+def create_app(settings: Settings | None = None, *, frontend_dist: Path | None = None) -> FastAPI:
     store = Store(settings)
     services = Services(store)
 
@@ -41,6 +45,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     application = FastAPI(title='DS Project API', version='1.0.0', lifespan=lifespan)
     application.state.store = store
+
+    # CORS 配置
+    application.add_middleware(
+        CORSMiddleware,
+        allow_origins=[
+            'http://localhost:5173',
+            'http://127.0.0.1:5173',
+            'http://localhost:8000',
+            'http://127.0.0.1:8000',
+        ],
+        allow_credentials=True,
+        allow_methods=['*'],
+        allow_headers=['*'],
+    )
 
     @application.middleware('http')
     async def request_id(request, call_next):
@@ -75,18 +93,24 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     database=dict(configured=bool(store.settings.db_enabled and store.settings.db_user and store.settings.db_password.get_secret_value())),
                     limits=dict(max_tool_calls=store.settings.max_tool_calls,
                                 max_agent_steps=store.settings.max_agent_steps,
-                                task_timeout_seconds=store.settings.task_timeout_seconds))
+                                task_timeout_seconds=store.settings.task_timeout_seconds,
+                                max_upload_bytes=store.settings.max_upload_bytes,
+                                max_task_input_bytes=store.settings.max_task_input_bytes,
+                                max_files_per_task=store.settings.max_files_per_task))
 
-    @application.post(prefix + '/sessions', status_code=201)
+    @application.post(prefix + '/sessions', status_code=201, response_model=SessionResponse)
     def new_session(request: SessionRequest = SessionRequest()):
         return store.new_session(request.title)
 
-    @application.get(prefix + '/sessions')
-    def sessions():
-        return {'items': store.list_sessions()}
+    @application.get(prefix + '/sessions', response_model=SessionListResponse)
+    def sessions(summary: bool = False):
+        store.backfill_session_titles()
+        items = store.list_sessions()
+        if summary:
+            items = [{k:v for k,v in item.items() if k not in {'messages','tasks'}} for item in items]
+        return {'items': items}
 
-    @application.get(prefix + '/sessions/{session_id}')
-    def session(session_id: str):
+    def session_payload(session_id: str) -> dict:
         with store.lock:
             record = store.get_session(session_id)
             logs = []
@@ -101,6 +125,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             visible_tasks = [item['task_id'] for item in tasks if item.get('kind') != 'database_preview']
             return dict(record, tasks=visible_tasks, question_logs=logs, report_versions=list_report_versions(store, session_id, tasks))
 
+    @application.get(prefix + '/sessions/{session_id}', response_model=SessionResponse)
+    def session(session_id: str):
+        return session_payload(session_id)
+
+    @application.patch(prefix + '/sessions/{session_id}', response_model=SessionResponse)
+    def rename_session(session_id: str, request: SessionRequest):
+        store.rename_session(session_id, request.title)
+        return session_payload(session_id)
+
+    @application.delete(prefix + '/sessions/{session_id}/messages', status_code=204)
+    def clear_session(session_id: str):
+        store.clear_session(session_id)
+        return Response(status_code=204)
+
     @application.get(prefix + '/database/sources')
     def database_sources():
         from src.database import DatabaseService
@@ -111,7 +149,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         from src.database import DatabaseService
         return DatabaseService(store).catalog(source_id)
 
-    @application.post(prefix + '/sessions/{session_id}/database/preview')
+    @application.post(prefix + '/sessions/{session_id}/database/preview', response_model=DatabasePreviewResponse)
     def database_preview(session_id: str, request: DatabasePreviewRequest):
         # This endpoint accepts only a configured relation, never arbitrary SQL.
         # Preview is bounded and uses the exact policy/snapshot path of analysis.
@@ -141,26 +179,26 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         store.delete_session(session_id)
         return Response(status_code=204)
 
-    @application.post(prefix + '/sessions/{session_id}/files', status_code=201)
+    @application.post(prefix + '/sessions/{session_id}/files', status_code=201, response_model=FileListResponse)
     async def upload(session_id: str, files: list[UploadFile]):
         return {'items': await services.upload(session_id, files)}
 
-    @application.get(prefix + '/sessions/{session_id}/files')
+    @application.get(prefix + '/sessions/{session_id}/files', response_model=FileListResponse)
     def files(session_id: str):
         return {'items': store.list_files(session_id)}
 
-    @application.post(prefix + '/sessions/{session_id}/messages', status_code=202)
+    @application.post(prefix + '/sessions/{session_id}/messages', status_code=202, response_model=AcceptedTaskResponse)
     def message(session_id: str, request: MessageRequest, idempotency_key: str | None = Header(default=None)):
         task = services.submit(session_id, request, idempotency_key)
         return {k: task.get(k) for k in ('session_id', 'message_id', 'task_id', 'status')}
 
-    @application.get(prefix + '/tasks/{task_id}')
+    @application.get(prefix + '/tasks/{task_id}', response_model=TaskResponse)
     def task(task_id: str):
         with store.lock:
             record = store.get_task(task_id)
             return dict(record, telemetry=summarize_task(record, store.list_events(task_id)))
 
-    @application.get(prefix + '/tasks/{task_id}/events')
+    @application.get(prefix + '/tasks/{task_id}/events', response_model=EventPageResponse)
     def events(task_id: str, after: int = Query(default=0, ge=0)):
         store.get_task(task_id)
         items = store.list_events(task_id, after)
@@ -258,7 +296,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def retry(task_id: str, idempotency_key: str | None = Header(default=None)):
         return services.retry(task_id, idempotency_key)
 
-    @application.get(prefix + '/tasks/{task_id}/artifacts')
+    @application.get(prefix + '/tasks/{task_id}/artifacts', response_model=ArtifactListResponse)
     def artifacts(task_id: str):
         task = store.get_task(task_id)
         deliverable = task['status'] in {'succeeded', 'waiting_user'}
@@ -277,7 +315,21 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                             media_type=artifact.mime_type, content_disposition_type='attachment',
                             headers={'Content-Security-Policy': csp})
 
-    @application.get(prefix + '/kb/files')
+    @application.get(prefix + '/artifacts/{artifact_id}/preview')
+    def preview(artifact_id: str):
+        from src.reporting import ReportService
+        from src.chart_svg import chart_csp
+        artifact = store.get_artifact(artifact_id)
+        if artifact.kind != 'report' or artifact.mime_type != 'text/html':
+            raise StoreError('仅支持已交付 HTML 报告的安全预览。', 422, 'invalid_preview')
+        task = store.get_task(artifact.task_id)
+        ReportService(store).read_report(TaskSpec.model_validate(task['spec']), artifact_id)
+        return FileResponse(store.resolve_artifact(artifact_id), media_type='text/html',
+            filename=artifact.name, content_disposition_type='inline', headers={
+                'Content-Security-Policy':'sandbox allow-scripts allow-downloads; '+chart_csp(),
+                'Cache-Control':'private, no-store','X-Content-Type-Options':'nosniff'})
+
+    @application.get(prefix + '/kb/files', response_model=FileListResponse)
     def kb_files():
         return {'items': [f for f in store._index('files').values() if f['source'] == 'kb' and f.get('active', True)]}
 
@@ -321,6 +373,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         service.delete(agent, memory_id)
         return Response(status_code=204)
 
+    from src.web import register_web
+    register_web(application, frontend_dist)
     return application
 
 
