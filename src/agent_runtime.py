@@ -103,6 +103,9 @@ class TaskRuntime:
         self._file_schema_cache: dict[str, dict] = {}
         # Coordinator finish_task declarations; the 2nd+ ends the main loop.
         self.finish_declarations = 0
+        # Whether the most recent model call hit its output-token cap (used by
+        # run_python to give truncation-specific feedback).
+        self.last_output_capped = False
         self.data = DataService(store)
         self.database = DatabaseService(store)
         self.memory = MemoryService(store)

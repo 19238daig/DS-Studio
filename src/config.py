@@ -23,7 +23,7 @@ class Settings(BaseSettings):
     analyst_temperature: float | None = 0.1
     report_temperature: float | None = 0.1
     main_max_output_tokens: int = 4096
-    analyst_max_output_tokens: int = 8192
+    analyst_max_output_tokens: int = 16384
     report_max_output_tokens: int = 8192
     model_timeout_seconds: int = Field(default=120, gt=0)
     task_timeout_seconds: int = Field(default=3600, gt=0)

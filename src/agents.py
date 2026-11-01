@@ -32,6 +32,7 @@ from src.execution import DockerExecutor, RESULT_CONTRACT, validate_analysis_scr
 from src.llm import build_model
 from src.memory import MemoryService
 from src.schemas import (TaskSpec, AnalysisResult, ReportResult, ReportNarrative, ReportLayout,
+                         new_id,
                          ReportMetricReference, ReportTextReplacement, ReportChartEdit, ReportSectionEdit,
                          ReportRevisionPatch)
 from src.storage import Store, StoreError
@@ -280,6 +281,11 @@ class BoundaryMiddleware(AgentMiddleware):
                 self.runtime.event('model_usage', f'{self.role} 模型调用完成', role=self.role,
                                    model=model, usage=usage, call_id=call_id, usage_index=index,
                                    duration_seconds=round(time.perf_counter() - started, 3))
+                output_tokens = usage.get('output_tokens') or 0
+                role_prefix = {'main': 'main', 'analyst': 'analyst', 'report_designer': 'report'}[self.role]
+                cap = getattr(self.runtime.store.settings, role_prefix + '_max_output_tokens', 0)
+                self.runtime.last_output_capped = bool(output_tokens and cap and output_tokens >= cap)
+                self.runtime.last_output_capped = bool(output_tokens and cap and output_tokens >= cap)
             # A batch asking for several data operations is not a single-value
             # question. Keep every requested operation instead of ending after
             # the first answer_metric, even if the model chose that tool twice.
@@ -852,22 +858,53 @@ def analyst_tools(runtime: TaskRuntime):
 
     @tool
     def run_python(code: str) -> dict:
-        """Execute analytical Python only in restricted Docker. Max three attempts including two corrections. Follow python_inputs contract."""
+        """Execute analytical Python only in restricted Docker. Three failed
+        attempts stop the loop; successful runs never count against it. Follow python_inputs contract."""
         def execute():
             with runtime.lock:
                 if runtime.python_attempts >= 3:
-                    raise StoreError('代码执行已达到首次加两次纠错上限。', 422, 'code_retry_limit')
-                runtime.python_attempts += 1
+                    raise StoreError('分析代码已连续三次校验或执行失败。', 422, 'code_retry_limit')
+            persisted = ''
             try:
-                validate_analysis_script(code)
+                try:
+                    validate_analysis_script(code)
+                except StoreError as exc:
+                    if exc.code == 'invalid_python':
+                        # Persist the rejected script for post-mortem and tell the
+                        # model when the real cause was output-cap truncation.
+                        run_id = new_id()
+                        persisted = str(runtime.store.safe_path(
+                            Path('script_output') / runtime.task.session_id / runtime.task.task_id / 'scripts' / run_id / 'main.py',
+                            'script_output'))
+                        persisted_path = Path(persisted)
+                        persisted_path.parent.mkdir(parents=True, exist_ok=True)
+                        persisted_path.write_text(code, encoding='utf-8')
+                        if getattr(runtime, 'last_output_capped', False):
+                            raise StoreError('脚本疑似被模型输出上限截断（上一次调用达到了 max_tokens）。'
+                                             '请把分析拆分为更短的脚本分步执行，并精简注释与长字符串。',
+                                             422, 'script_truncated') from exc
+                    raise
                 refs = runtime.database_inputs()
                 executor = DockerExecutor(runtime.store)
                 result = executor.run_python(runtime.task, code, db_refs=refs) if refs else executor.run_python(runtime.task, code)
+                with runtime.lock:
+                    runtime.python_attempts = 0  # a completed analysis proves the pattern; failures restart fresh
                 return runtime.record_analysis(result)
             except StoreError as exc:
-                if runtime.python_attempts >= 3:
-                    runtime.analysis_failure = '分析代码经三次校验或执行仍未成功，已停止重复调用。最后原因：' + redact(exc,runtime.store)
-                    runtime.event('analysis_stopped',runtime.analysis_failure,role='analyst',code=exc.code)
+                with runtime.lock:
+                    runtime.python_attempts += 1
+                    attempts = runtime.python_attempts
+                if attempts >= 3:
+                    if runtime.analyses:
+                        # A validated analysis already exists (this session): direct
+                        # the model to deliver it instead of failing the whole task.
+                        runtime.event('analysis_stopped',
+                            f'分析代码重试已达上限，但本任务已有 {len(runtime.analyses)} 项完成的验证分析，请立即 finish_analysis 交付。',
+                            role='analyst', code=exc.code)
+                        raise StoreError(f'分析代码连续三次失败（{redact(exc, runtime.store)[:160]}），'
+                                         '但本任务已有完成的验证分析——请立即调用 finish_analysis 交付，不要重跑。', 422, 'code_retry_limit') from exc
+                    runtime.analysis_failure = '分析代码经三次校验或执行仍未成功，已停止重复调用。最后原因：' + redact(exc, runtime.store)
+                    runtime.event('analysis_stopped', runtime.analysis_failure, role='analyst', code=exc.code)
                 raise
         return runtime.safe(execute)
 
@@ -1592,7 +1629,16 @@ def run_task(task: TaskSpec, store: Store, event, cancel_check, *, model_factory
         report_needed = gap == 'report' or runtime.followup_report_edit or _report_requested(task, runtime.finished_intent)
         data_needed = gap == 'analysis' or _data_requested(task, runtime.finished_intent)
         if runtime.analysis_failure:
-            result = {'status':'failed', 'final_response':runtime.analysis_failure, 'analysis_ids':runtime.analyses, 'report_ids':[]}
+            if runtime.analyses:
+                # A validated analysis was already delivered before the failure:
+                # hand the user the completed work instead of discarding it.
+                final = _data_answer(runtime, runtime.analyses)
+                notice = '（说明：分析执行在中途达到重试上限，以上为已完成的验证结果。）'
+                result = {'status': 'completed',
+                          'final_response': final + '\n\n' + notice,
+                          'analysis_ids': runtime.analyses, 'report_ids': []}
+            else:
+                result = {'status':'failed', 'final_response':runtime.analysis_failure, 'analysis_ids':runtime.analyses, 'report_ids':[]}
         elif runtime.clarification:
             result = {'status': 'waiting_user', 'final_response': redact(runtime.clarification, store), 'analysis_ids': runtime.analyses, 'report_ids': []}
         elif report_needed and not runtime.reports:
