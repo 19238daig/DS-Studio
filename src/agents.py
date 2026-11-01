@@ -597,7 +597,14 @@ def main_tools(runtime: TaskRuntime):
                     # numbers; dropping the prose and binding real metrics
                     # delivers actual values instead of looping on rewording.
                     template, template_refs = None, []
-                selected = validate_refs(runtime, metric_refs or template_refs)
+                try:
+                    selected = validate_refs(runtime, metric_refs or template_refs)
+                except StoreError as error:
+                    if error.code != 'invalid_answer_label' or not metric_refs:
+                        raise
+                    # The app renders names from metric keys; numeric labels are
+                    # dropped instead of looping on reworded attempts.
+                    selected = validate_refs(runtime, [ref.model_copy(update={'label': ''}) for ref in metric_refs])
                 if not selected:
                     selected = automatic_refs(runtime, runtime.analyses or runtime.task.analysis_ids)
                 if not selected and not wants_tables(runtime.task.request):
@@ -918,7 +925,12 @@ def analyst_tools(runtime: TaskRuntime):
                     # Drop prose carrying unbound numbers; the app renders the
                     # registered values instead of looping on rewording.
                     template, extracted = None, []
-                refs = validate_refs(runtime, metric_refs or extracted)
+                try:
+                    refs = validate_refs(runtime, metric_refs or extracted)
+                except StoreError as error:
+                    if error.code != 'invalid_answer_label' or not metric_refs:
+                        raise
+                    refs = validate_refs(runtime, [ref.model_copy(update={'label': ''}) for ref in metric_refs])
                 if not refs:
                     refs = automatic_refs(runtime, runtime.analyses)
                 if not refs and not wants_tables(runtime.task.request):

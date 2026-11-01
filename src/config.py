@@ -67,13 +67,6 @@ class Settings(BaseSettings):
     db_fetch_rows: int = Field(default=2000, gt=0, le=10000)
     db_dataset_dir: Path = Path('datasets/olist')
 
-    @field_validator('warm_executor')
-    @classmethod
-    def warm_executor_requires_validated_release(cls, value):
-        if value:
-            raise ValueError('Warm execution is not enabled in this release; keep WARM_EXECUTOR=false.')
-        return value
-
     @field_validator('main_temperature', 'analyst_temperature', 'report_temperature', mode='before')
     @classmethod
     def temperature_off_omits_the_parameter(cls, value):

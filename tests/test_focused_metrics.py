@@ -110,5 +110,8 @@ def test_finish_reference_cannot_smuggle_unbound_numbers_through_label(metric_co
     finish=next(tool for tool in main_tools(runtime) if tool.name=='finish_task')
     result=finish.invoke({'intent':'analysis','answer':'done',
         'metric_refs':[{'analysis_id':a.analysis_id,'metric_key':'pH_mean','label':'均值为999'}]})
-    assert result['status']=='error' and result['code']=='invalid_answer_label'
-    assert not runtime.answer_metric_refs
+    # Numeric labels are dropped, never displayed: the app renders the metric
+    # key's registered value instead of looping on reworded attempts.
+    assert result['status']=='recorded'
+    assert runtime.answer_metric_refs[0].label==''
+    assert all('999' not in (ref.label or '') for ref in runtime.answer_metric_refs)

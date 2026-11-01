@@ -232,6 +232,30 @@ def test_finish_analysis_unbound_answer_falls_back_to_automatic_binding(chat):
     assert [ref.metric_key for ref in runtime.answer_metric_refs] == ['pH_mean']
 
 
+def test_finish_analysis_numeric_label_falls_back_to_key_rendering(chat):
+    """A numeric label is dropped and the app renders the metric key."""
+    store, task, ids = chat
+    analysis = DataService(store).analyze(task, ids[0], 'aggregate', aggregations={'pH': 'mean'})
+    runtime = TaskRuntime(task, store, Mock(), lambda: False)
+    runtime.record_analysis(analysis)
+    result = tools(runtime, analyst_tools)['finish_analysis'].invoke(
+        {'metric_refs': [{'analysis_id': analysis.analysis_id, 'metric_key': 'pH_mean', 'label': '2024年均值'}]})
+    assert result['status'] == 'analysis_ready', result
+    assert [ref.metric_key for ref in runtime.answer_metric_refs] == ['pH_mean']
+    assert runtime.answer_metric_refs[0].label == ''
+
+
+def test_finish_task_numeric_label_falls_back_instead_of_looping(chat):
+    store, task, ids = chat
+    analysis = DataService(store).analyze(task, ids[0], 'aggregate', aggregations={'pH': 'mean'})
+    task.analysis_ids = [analysis.analysis_id]
+    runtime = TaskRuntime(task, store, Mock(), lambda: False)
+    result = tools(runtime, main_tools)['finish_task'].invoke({'intent': 'analysis', 'metric_refs': [
+        {'analysis_id': analysis.analysis_id, 'metric_key': 'pH_mean', 'label': '均值为3.3'}]})
+    assert result['status'] == 'recorded', result
+    assert runtime.answer_metric_refs[0].label == ''
+
+
 def test_task_stage_tracks_the_active_phase(chat):
     store, task, ids = chat
     analysis = DataService(store).analyze(task, ids[0], 'aggregate', aggregations={'pH': 'mean'})

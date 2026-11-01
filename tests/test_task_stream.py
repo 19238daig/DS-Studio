@@ -223,9 +223,9 @@ def test_client_unsupported_stream_falls_back_without_task_submission():
     finally: sub.close(); client.close()
 
 
-def test_warm_executor_is_not_a_silently_ignored_flag():
-    with pytest.raises(ValueError, match='not enabled'):
-        Settings(warm_executor=True, _env_file=None)
+def test_warm_executor_flag_is_a_real_setting():
+    assert Settings(warm_executor=True, _env_file=None).warm_executor is True
+    assert Settings(warm_executor=False, _env_file=None).warm_executor is False
 
 
 def test_long_verified_answer_is_segmented_without_losing_content(context):
