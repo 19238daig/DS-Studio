@@ -23,6 +23,7 @@ from PIL import Image
 from src.chart_svg import CHART_RENDERING, chart_csp, inline_svg, interaction_script
 
 from src.answers import identifier_tokens, unbound_numbers
+from src.text_guard import CN_NUMBER, NUMERIC_LEXEME, TOKEN
 from src.schemas import (AnalysisResult, ReportChartEdit, ReportSectionEdit, ReportLayout, ReportRevisionPatch,
                          ReportResult, ReportTextReplacement, TaskSpec, new_id)
 from pydantic import ValidationError
@@ -30,17 +31,14 @@ from src.storage import Store, StoreError, file_hash
 from src.performance import span, traced_method
 from src.validation import validation_scope, validated_method
 
-TOKEN = re.compile(r'\{\{metric:([a-zA-Z0-9_-]+):([^{}:]+)\}\}')
 REPORT_STYLE_REVISION = 'responsive-20261024'
 XML_BAD = re.compile('[\x00-\x08\x0b\x0c\x0e-\x1f\ud800-\udfff\ufffe\uffff]')
 # A bounded static guard against accidental unbound numerical claims, not a
 # proof that free-form qualitative prose follows logically from the data.
-CN_NUMBER = '零〇一二两三四五六七八九十百千万亿'
 NUMBER = re.compile(r'\d|百分之|[' + CN_NUMBER + r']{2,}|负[' + CN_NUMBER + r']|[' + CN_NUMBER + r']+点[' + CN_NUMBER + r']+|[' + CN_NUMBER + r'](?:倍|成|个|项|行|列|分|元|[%％])|'
     r'(?:为|是|等于|约|达到|超过|低于|高于|至少|最多|合计|共|均值|平均值|中位数|总量|总额|数量|比例|占比|增加|减少|下降|提升)\s*[' +
     CN_NUMBER + r'](?=$|[。；，、%％\s）)])')
 HTML_TABLE_LIMIT = 200
-NUMERIC_LEXEME = re.compile(r'[+-]?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?')
 VERSION = '1.0'
 
 
