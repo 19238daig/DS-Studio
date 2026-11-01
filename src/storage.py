@@ -325,6 +325,13 @@ class Store:
             event = dict(seq=seq + 1, type=event_type, message=message, created_at=utcnow(), **details)
             payload = (json.dumps(event, ensure_ascii=False, allow_nan=False) + '\n').encode('utf-8')
             with path.open('ab') as stream:
+                if size and size > 0:
+                    with path.open('rb') as reader:
+                        reader.seek(size - 1)
+                        if reader.read(1) != b'\n':
+                            # A killed writer left a torn line; terminate it so
+                            # this event lands on its own parseable line.
+                            stream.write(b'\n')
                 stream.write(payload)
                 stream.flush()
                 os.fsync(stream.fileno())

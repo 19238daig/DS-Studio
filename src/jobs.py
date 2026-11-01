@@ -175,15 +175,32 @@ def warm_executor_loop(settings: Settings, runner: Callable | None = None) -> No
     # Importing src.agents here (once) is the whole point of warm mode; it
     # delays registration by a few seconds, which the coordinator tolerates.
     importlib.import_module('src.agents')
-    store.write_json(WARM_EXECUTOR_FILE, dict(executor_id=executor_id, pid=os.getpid(), updated_at=utcnow()))
+    create_time = 0.0
+    try:
+        import psutil
+        create_time = psutil.Process(os.getpid()).create_time()
+    except (ImportError, OSError):
+        pass
+    store.write_json(WARM_EXECUTOR_FILE, dict(executor_id=executor_id, pid=os.getpid(),
+                                              create_time=create_time, updated_at=utcnow()))
     while True:
         handoff = store.read_json(WARM_HANDOFF) or {}
         if handoff.get('executor_id') == executor_id and handoff.get('task_id'):
             task_id = handoff['task_id']
             try:
                 execute_task(task_id, settings, runner)
+            except Exception:
+                pass  # execute_task already persisted the terminal state.
             except BaseException:
-                pass
+                # Non-Exception escapes (CancelledError, MemoryError) bypass
+                # execute_task's own handlers; fail the task record so it does
+                # not sit 'running' until the timeout.
+                try:
+                    store.update_task(task_id, status='failed', stage='failed',
+                                      error='Task executor hit a fatal error', finished_at=utcnow())
+                    store.finalize_profile_task(task_id, 'failed', 'Task executor hit a fatal error')
+                except Exception:
+                    pass
             with store.lock:
                 current = store.read_json(WARM_HANDOFF) or {}
                 if current.get('task_id') == task_id and current.get('executor_id') == executor_id:
@@ -294,6 +311,7 @@ class Worker:
                 self.store.add_event(tid, status, '任务超时' if timed_out else '任务已停止')
             if not child.is_alive():
                 child.join(timeout=1)
+                stop_task_containers(tid)
                 if self.store.get_task(tid)['status'] == 'running':
                     self.store.update_task(tid, status='failed', stage='failed',
                         error=f'Task process exited without a result (code {child.exitcode})', finished_at=utcnow())
@@ -333,8 +351,8 @@ class Worker:
         if self.executor is not None:
             process = self.executor['process']
             stale = (not process.is_alive()
-                     or self.executor['completed'] >= WARM_RESPAWN_AFTER_TASKS
-                     or self.executor['fingerprint'] != self._warm_settings_fingerprint())
+                     or self.executor['fingerprint'] != self._warm_settings_fingerprint()
+                     or (self.executor['completed'] >= WARM_RESPAWN_AFTER_TASKS and not self._active))
             if stale:
                 self._stop_executor()
             else:
@@ -463,11 +481,17 @@ class Worker:
                 try:
                     import psutil
                     process = psutil.Process(registration['pid'])
-                    process.terminate()
-                    try:
-                        process.wait(timeout=5)
-                    except psutil.TimeoutExpired:
-                        process.kill()
+                    # PID reuse guard: only terminate a process that was really
+                    # started at the recorded executor spawn time.
+                    recorded = float(registration.get('create_time') or 0)
+                    if recorded and abs(process.create_time() - recorded) >= 2:
+                        pass  # The PID now belongs to an unrelated process.
+                    else:
+                        process.terminate()
+                        try:
+                            process.wait(timeout=5)
+                        except psutil.TimeoutExpired:
+                            process.kill()
                 except (ImportError, OSError, ProcessLookupError):
                     pass
                 except Exception:
@@ -505,7 +529,7 @@ class Worker:
                     continue
                 if task['session_id'] in {entry['session_id'] for entry in self._active.values()}:
                     continue
-                prior = [x for x in tasks if x['session_id'] == task['session_id'] and x['created_at'] < task['created_at']]
+                prior = [x for x in tasks if x['session_id'] == task['session_id'] and (x['created_at'], x['task_id']) < (task['created_at'], task['task_id'])]
                 if any(x['status'] not in TERMINAL for x in prior):
                     continue
                 claimed = self.store.update_task(task['task_id'], status='running', stage='starting', owner=self.owner,
@@ -558,6 +582,7 @@ class Worker:
                     break
                 child.join(timeout=0.5)
             child.join(timeout=1)
+            stop_task_containers(task_id)
             if self.store.get_task(task_id)['status'] == 'running':
                 self.store.update_task(task_id, status='failed', stage='failed', error=f'Task process exited without a result (code {child.exitcode})', finished_at=utcnow())
                 self.store.finalize_profile_task(task_id, 'failed', 'Profile process exited without a result')

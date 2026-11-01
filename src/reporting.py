@@ -24,6 +24,21 @@ from src.chart_svg import CHART_RENDERING, chart_csp, inline_svg, interaction_sc
 
 from src.answers import identifier_tokens, unbound_numbers
 from src.text_guard import CN_NUMBER, NUMERIC_LEXEME, TOKEN
+
+
+def _normalized_numbers(text: str):
+    """Numeric values with formatting noise removed (thousand separators,
+    trailing decimal zeros) so formatting-only edits pass the gate."""
+    from decimal import Decimal, InvalidOperation
+    values = []
+    for lex in NUMERIC_LEXEME.findall(text):
+        clean = lex.replace(',', '')
+        try:
+            values.append(Decimal(clean).normalize())
+        except InvalidOperation:
+            values.append(lex)
+    return values
+
 from src.schemas import (AnalysisResult, ReportChartEdit, ReportSectionEdit, ReportLayout, ReportRevisionPatch,
                          ReportResult, ReportTextReplacement, TaskSpec, new_id)
 from pydantic import ValidationError
@@ -303,7 +318,7 @@ class ReportService:
             replacement = self._clean(item.replacement)
             if not replacement.strip():
                 raise StoreError('译文不能为空。', 422, 'invalid_text_replacement')
-            if Counter(NUMERIC_LEXEME.findall(item.original)) != Counter(NUMERIC_LEXEME.findall(replacement)):
+            if Counter(_normalized_numbers(item.original)) != Counter(_normalized_numbers(replacement)):
                 raise StoreError('翻译不能增加、删除或改变原文数值；请保留原始数字与精度。', 422, 'translation_number_changed')
             pending.extend((container, key, replacement) for container, key in matches)
             if replacement != item.original:

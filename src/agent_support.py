@@ -220,7 +220,16 @@ def _data_answer(runtime: TaskRuntime, ids: list[str]) -> str:
             if analysis.limitations:
                 parts.append('局限：' + '；'.join(analysis.limitations))
     if not parts:
-        raise StoreError('已有分析尚未绑定可直接回答本次问题的结论，已保留计算结果。', 422, 'missing_answer_binding')
+        # Metadata-only analyses (describe/rows previews) have no bindable
+        # business metric: answer with the structure summary instead of a
+        # dead-end failure.
+        meta_parts = []
+        for aid in ids:
+            analysis = runtime.authorize_analysis(aid)
+            rows = analysis.metrics.get('source_rows') or analysis.metrics.get('result_rows')
+            meta_parts.append(f'已完成所选数据的基础概览（{rows if rows is not None else "结构"}行级信息）')
+        return ('；'.join(meta_parts) +
+                '。请进一步指定统计口径（如均值、分布、分组对比），我会据此计算并绑定结论。')
     return '\n\n'.join(dict.fromkeys(parts))
 
 

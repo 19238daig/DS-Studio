@@ -170,8 +170,9 @@ def create_app(settings: Settings | None = None, *, frontend_dist: Path | None =
                               result={'query_id': result['query_id']})
             return {**result, 'task_id': spec.task_id}
         except BaseException as exc:
+            reason = str(exc) if isinstance(exc, StoreError) else '数据库预览未完成。'
             store.update_task(spec.task_id, status='failed', stage='failed', finished_at=utcnow(),
-                              error={'message': str(exc) if isinstance(exc, StoreError) else '数据库预览未完成。'})
+                              error=reason)
             raise
 
     @application.delete(prefix + '/sessions/{session_id}', status_code=204)

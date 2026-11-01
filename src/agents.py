@@ -296,9 +296,22 @@ class BoundaryMiddleware(AgentMiddleware):
                 composite_request = (len(requested_operations(self.runtime.task.request)) > 1 or
                     bool(re.search(r'比较|对比|关系|分布|\b(?:compare|comparison|distribution|relationship)\b',self.runtime.task.request,re.I)))
                 if scalar and (other_work or self.runtime.report_required() or (len(scalar)==1 and composite_request)):
-                    message.tool_calls = [{'name':'perform_task','id':calls[0]['id'],'type':'tool_call',
-                        'args':{'kind':'report' if self.runtime.report_required() else 'analysis',
-                                'request':self.runtime.task.request}}]
+                    delegations = [call for call in calls if call['name'] in {'perform_task','task'}]
+                    if delegations:
+                        # A delegation is already in the batch: fold everything
+                        # into it, restoring the FULL original request so the
+                        # analyst covers the whole goal once.
+                        delegations[0]['args'] = {**delegations[0].get('args', {}),
+                                                  'request': self.runtime.task.request}
+                        message.tool_calls = delegations
+                    else:
+                        perform = {'name':'perform_task','id':calls[0]['id'],'type':'tool_call',
+                            'args':{'kind':'report' if self.runtime.report_required() else 'analysis',
+                                    'request':self.runtime.task.request}}
+                        # Sibling side-effect calls (select_files, catalog,
+                        # ask_user...) keep their effects; only scalar intents
+                        # are folded into perform_task.
+                        message.tool_calls = [perform] + [call for call in calls if call['name'] not in {'query_metric','query_database_metric'}]
                     calls = message.tool_calls
                 elif len(scalar)>1:
                     # ToolNode may execute a batch concurrently. Normalize all
@@ -449,14 +462,17 @@ def main_tools(runtime: TaskRuntime):
             if len(queries)<2:
                 raise StoreError('Batch requires multiple scalar queries',422,'invalid_metric_batch')
             results, refs = [], []
+            for query in queries:
+                # Validate every shape BEFORE arming the partial-delivery guard,
+                # so a malformed batch cannot poison later finish_task calls.
+                if set(query)!={'kind','args'} or query['kind'] not in {'file','database'}:
+                    raise StoreError('Invalid scalar batch item',422,'invalid_metric_batch')
             with runtime.lock:
                 runtime.scalar_batch_pending={'batch'}
                 runtime.scalar_batch_incomplete=True
                 runtime.scalar_batch_required=len(queries)
             try:
                 for query in queries:
-                    if set(query)!={'kind','args'} or query['kind'] not in {'file','database'}:
-                        raise StoreError('Invalid scalar batch item',422,'invalid_metric_batch')
                     target = query_metric if query['kind']=='file' else query_database_metric
                     result=target.invoke(query['args'])
                     results.append(result)

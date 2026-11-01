@@ -40,7 +40,15 @@ def test_warm_executor_serves_claimed_tasks_and_records_completion(warm_store):
         executor = warm_store.read_json('state/worker.executor.json')
         assert executor['executor_id'] == worker.executor['executor_id']
         assert worker.executor['completed'] >= 1
-        handoff = warm_store.read_json('state/worker.handoff.json') or {}
+        # The resident clears the handoff right after the terminal write; poll
+        # briefly for that clearance (the parent saw the record first).
+        deadline_clear = time.time() + 10
+        handoff = {'task_id': 'pending'}
+        while time.time() < deadline_clear:
+            handoff = warm_store.read_json('state/worker.handoff.json') or {}
+            if not handoff.get('task_id'):
+                break
+            time.sleep(0.2)
         assert not handoff.get('task_id'), 'handoff must be cleared after completion'
     finally:
         worker.stopping = True
