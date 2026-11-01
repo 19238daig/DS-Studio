@@ -21,7 +21,6 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest==9.1.1"]
-legacy-ui = ["streamlit==1.66.1"]
 
 [tool.setuptools.packages.find]
 include = ["src*"]

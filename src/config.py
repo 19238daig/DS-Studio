@@ -12,7 +12,6 @@ class Settings(BaseSettings):
     workspace: Path = Field(default=ROOT, validation_alias='DS_WORKSPACE')
     api_key: SecretStr = SecretStr('')
     base_url: str = 'https://dashscope.aliyuncs.com/compatible-mode/v1'
-    model_name: str = 'qwen3.7-plus-2026-05-26'
     main_model: str = 'qwen3.8-flash'
     analyst_model: str = 'qwen3.7-plus-2026-05-26'
     report_model: str = 'qwen3.7-plus-2026-05-26'
@@ -67,7 +66,6 @@ class Settings(BaseSettings):
     db_max_result_rows: int = Field(default=1000000, gt=0)
     db_fetch_rows: int = Field(default=2000, gt=0, le=10000)
     db_dataset_dir: Path = Path('datasets/olist')
-    db_source_sql_dir: Path = Path('local/database')
 
     @field_validator('warm_executor')
     @classmethod

@@ -79,9 +79,8 @@ powershell -ExecutionPolicy Bypass -File scripts/stop.ps1
 
 macOS / Linux 可使用 `.venv/bin/python` 分别执行上述两个 Python 入口；PowerShell 进程管理脚本主要面向 Windows。完整平台组合尚未全部验证。
 
-前端热更新开发：运行 `powershell -ExecutionPolicy Bypass -File scripts/dev.ps1`，打开 <http://127.0.0.1:5173/>，Vite 将 `/api` 代理到 FastAPI。生产模式不启动 Node 服务或 Streamlit。
+前端热更新开发：运行 `powershell -ExecutionPolicy Bypass -File scripts/dev.ps1`，打开 <http://127.0.0.1:5173/>，Vite 将 `/api` 代理到 FastAPI。生产模式不启动 Node 服务。
 
-旧 `app.py` 仅作为历史入口保留；如需回归旧界面，另行安装 `pip install -e ".[legacy-ui]"`。
 
 ## 使用
 
@@ -110,7 +109,6 @@ macOS / Linux 可使用 `.venv/bin/python` 分别执行上述两个 Python 入�
 | 路径 | 用途 | 提交到 GitHub |
 | --- | --- | --- |
 | `frontend/`、`src/`、`templates/` | React 界面、API、Agent、数据与报告实现 | 是 |
-| `app.py` | 旧 Streamlit 入口（可选历史回归） | 是 |
 | `config/`、`skills/`、`vendor/` | 提示词、项目适配和带许可证的技能参考 | 是 |
 | `db/migrations/`、`docker/`、`scripts/`、`tests/` | 迁移、沙箱、工具和自动化测试 | 是 |
 | `.env.example` | 无凭据的配置模板 | 是 |

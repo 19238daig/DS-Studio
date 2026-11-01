@@ -1,6 +1,6 @@
 # 开发与验证
 
-React / TypeScript 前端在 `frontend/`，FastAPI 和 Agent 在 `src/`，后台入口是 `worker.py`。FastAPI 直接提供 `frontend/dist` 的静态构建；`app.py` 是可选的旧界面入口。
+React / TypeScript 前端在 `frontend/`，FastAPI 和 Agent 在 `src/`，后台入口是 `worker.py`。FastAPI 直接提供 `frontend/dist` 的静态构建。
 Python 依赖与 Docker 分析依赖分别固定在两个 `requirements.lock` 文件。
 
 ## 测试
@@ -52,4 +52,4 @@ npm run typecheck
 
 `openapi.json` 是本地生成文件，不提交；`src/shared/api/generated.ts` 是已锁定的公开契约，修改后需要审阅差异。请求中的来源未提供与明确空数组保留不同语义；流重连只订阅已有任务。报告预览使用独立接口、来源校验与沙箱 iframe，不注入应用 DOM。
 
-React Router 使用实际可安装的 7.18.5，TypeScript 使用生成器兼容的 5.9.3，其余版本以 `frontend/package-lock.json` 为准。旧 Streamlit AppTest 仅在安装可选 `legacy-ui` 依赖时运行；新 UI 由 React 单元测试及浏览器验收覆盖。
+React Router 使用实际可安装的 7.18.5，TypeScript 使用生成器兼容的 5.9.3，其余版本以 `frontend/package-lock.json` 为准。UI 由 React 单元测试及 Playwright 浏览器验收覆盖。
