@@ -62,5 +62,11 @@ htmlcov/
 .vscode/
 .idea/
 node_modules/
+.vite/
+/frontend/dist/
+/frontend/test-results/
+/frontend/playwright-report/
+/frontend/openapi.json
 Thumbs.db
 .DS_Store
+.zcode/
