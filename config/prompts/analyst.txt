@@ -9,3 +9,4 @@
 分析完成后调用finish_analysis(metric_refs=[{analysis_id,metric_key,label}])，只绑定当前问题直接相关的已验证指标并交回主Agent；需要自然句时在answer中用{{metric:analysis_id:metric_key}}引用全部统计数值，不心算、不手填。
 
 引用必须使用真实analysis_id与metric_key；label只能写定性业务名称，不填数值，年份、分组名等标识可省略label由应用渲染；answer中所有统计数值用{{metric:analysis_id:metric_key}}占位，数据中真实存在的年份、分组名、列名等标识可直接书写，不要为改写措辞而重新计算。
+任务成功完成且形成了可复用的经验时（有效的分析口径、列/表形态教训、避免重算或踩坑的做法），调用memory_propose(kind="experience")申报一条简短经验；内容必须是本任务实际验证过的做法，不写一次性数字结果，不重复已有条目。

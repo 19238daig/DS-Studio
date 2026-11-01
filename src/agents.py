@@ -1645,6 +1645,23 @@ def run_task(task: TaskSpec, store: Store, event, cancel_check, *, model_factory
         else:
             result = {'status': 'completed', 'final_response': redact(final, store), 'analysis_ids': [], 'report_ids': []}
         verified = bool(runtime.analyses or runtime.reports or runtime.answer_metric_refs)
+        if verified and result['status'] == 'completed':
+            # Deterministic experience capture: one verified, deduplicated entry
+            # per successful delivery so the specialists' memory stays alive
+            # without depending on the model choosing to propose. Promotion still
+            # flows through memory.finalize below.
+            try:
+                owner = 'report_designer' if runtime.reports else 'analyst'
+                metric_keys = []
+                for aid in list(runtime.analyses)[-3:]:
+                    metric_keys.extend(list(runtime.authorize_analysis(aid).metrics)[:4])
+                detail = '、'.join(dict.fromkeys(metric_keys))[:140] or ('报告交付' if runtime.reports else '分析交付')
+                content = (f'成功经验：完成「{task.request[:60]}」——'
+                           f'{"生成报告并" if runtime.reports else ""}登记 {len(runtime.analyses)} 项已验证指标'
+                           f'（{detail}）；同口径问题可直接复用，无需重算。')
+                runtime.memory.propose(owner, content, task.task_id, 'project', 'experience')
+            except Exception:
+                pass  # Memory is best-effort and must never block delivery.
         runtime.memory.finalize(task.task_id, success=result['status'] == 'completed', verified=verified, explicit_preferences=runtime.preference_saved)
         result['tool_calls'] = runtime.calls
         if runtime.direct_metric_answer is not None:
