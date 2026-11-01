@@ -76,6 +76,14 @@ def create_app(settings: Settings | None = None, *, frontend_dist: Path | None =
     async def store_error(request, exc):
         return error(request, exc.status, exc.code, str(exc))
 
+    @application.exception_handler(Exception)
+    async def unhandled_exception_handler(request: Request, exc: Exception):
+        # Non-StoreError failures still answer in the standard envelope so the
+        # frontend can surface them consistently.
+        return JSONResponse(status_code=500, content=dict(
+            code='internal_error', message='服务内部错误，请稍后重试；已保存的数据不受影响。',
+            request_id=str(uuid4()), details=None))
+
     @application.exception_handler(RequestValidationError)
     async def validation_error(request, exc):
         details = [{'loc': list(e['loc']), 'message': e['msg'], 'type': e['type']} for e in exc.errors()]

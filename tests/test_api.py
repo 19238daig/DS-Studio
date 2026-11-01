@@ -99,6 +99,15 @@ def test_clear_session_endpoint_keeps_files_and_drops_history(client):
     assert client.delete('/api/v1/sessions/missing/messages').status_code == 404
 
 
+def test_clear_session_rejects_waiting_clarification(client):
+    sid = client.post('/api/v1/sessions', json={}).json()['session_id']
+    tid = client.post(f'/api/v1/sessions/{sid}/messages', json={'content': '需要补充示例'}).json()['task_id']
+    # Force the waiting state on the queued task for the guard test.
+    client.app.state.store.update_task(tid, status='waiting_user')
+    refused = client.delete(f'/api/v1/sessions/{sid}/messages')
+    assert refused.status_code == 409 and refused.json()['code'] == 'waiting_clarification'
+
+
 def test_first_question_titles_the_session_automatically(client):
     sid = client.post('/api/v1/sessions', json={}).json()['session_id']
     client.post(f'/api/v1/sessions/{sid}/messages', json={'content': '分析不同年份的营收差异并生成报告'})

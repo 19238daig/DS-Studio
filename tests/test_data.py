@@ -153,5 +153,7 @@ def test_empty_csv_and_duplicate_headers(setup):
     with pytest.raises(StoreError, match='No rows'):
         data.analyze(task_for(setup, fid), fid, 'rows')
     _, duplicate = register(setup, 'duplicate.csv', 'x,x\n1,2\n')
-    with pytest.raises(StoreError, match='duplicate'):
-        data.profile(duplicate(), sid)
+    # Duplicate/merged headers are repaired in place (x, x_2) instead of
+    # rejecting the whole file.
+    profile = data.profile(duplicate(), sid)
+    assert profile.columns == ['x', 'x_2']

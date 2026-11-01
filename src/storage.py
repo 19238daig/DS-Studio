@@ -483,6 +483,10 @@ class Store:
             tasks = [t for t in self.list_tasks() if t['session_id'] == session_id]
             if any(t['status'] not in TERMINAL for t in tasks):
                 raise StoreError('Cancel or finish active tasks before clearing the conversation', 409, 'task_active')
+            waiting = [t for t in tasks if t['status'] == 'waiting_user']
+            if waiting:
+                raise StoreError('会话有等待补充信息的任务，清空会丢失该问题的上下文；请先在对话中回答或取消该任务。',
+                                 409, 'waiting_clarification')
             self._purge_session_data(session_id, tasks, keep_files=True)
             session['messages'], session['tasks'] = [], []
             self.write_json(f'state/sessions/{session_id}.json', session)

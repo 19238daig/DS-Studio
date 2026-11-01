@@ -43,10 +43,20 @@ def infer_numbers(frame: pd.DataFrame) -> pd.DataFrame:
 
 
 def validate_columns(frame: pd.DataFrame) -> pd.DataFrame:
+    """Flatten merged headers and repair duplicate/empty names in place.
+
+    Hand-made Excel sheets commonly repeat a merged header label; renaming the
+    duplicates (col, col_2, ...) keeps the data usable while staying faithful
+    to the original order."""
     names = [' / '.join(str(x) for x in c if not str(x).startswith('Unnamed:')) if isinstance(c, tuple) else str(c) for c in frame.columns]
-    if len(set(names)) != len(names) or any(not c.strip() for c in names):
-        raise StoreError('Table has duplicate or empty column names; correct the source headers', 422, 'invalid_columns')
-    frame.columns = names
+    seen: dict[str, int] = {}
+    repaired = []
+    for index, name in enumerate(names):
+        clean = name.strip() or f'unnamed_{index + 1}'
+        count = seen.get(clean, 0)
+        seen[clean] = count + 1
+        repaired.append(clean if count == 0 else f'{clean}_{count + 1}')
+    frame.columns = repaired
     return frame
 
 
@@ -100,14 +110,19 @@ class DataService:
         text = ''
         if suffix == '.csv':
             raw = path.read_bytes()
-            for encoding in ('utf-8-sig', 'gb18030'):
+            encodings = ['utf-8-sig', 'gb18030']
+            # Excel "Unicode Text"/PowerShell exports are UTF-16; decoding them
+            # as gb18030 silently produces mojibake headers, so BOM wins first.
+            if raw[:2] in (b'\xff\xfe', b'\xfe\xff'):
+                encodings.insert(0, 'utf-16')
+            for encoding in encodings:
                 try:
                     text = raw.decode(encoding)
                     break
                 except UnicodeDecodeError:
                     continue
             else:
-                raise StoreError('CSV encoding must be UTF-8 or GB18030', 422, 'encoding_error')
+                raise StoreError('CSV encoding must be UTF-8, UTF-16 or GB18030', 422, 'encoding_error')
             try:
                 dialect = csv.Sniffer().sniff(text[:65536], delimiters=',;\t|')
                 delimiter = dialect.delimiter

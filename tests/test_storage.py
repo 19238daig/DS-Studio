@@ -156,6 +156,20 @@ def test_backfill_titles_only_default_titled_sessions_with_history(store):
     assert store.get_session(legacy)['title'] == '分析不同年份的营收差异并生成报告'
 
 
+def test_clear_session_refuses_waiting_user_tasks(store):
+    sid = store.new_session()['session_id']
+    task = store.create_task(TaskSpec(session_id=sid, request='需要补充信息'))
+    store.update_task(task['task_id'], status='waiting_user')
+    with pytest.raises(StoreError) as error:
+        store.clear_session(sid)
+    assert error.value.code == 'waiting_clarification'
+    # A session without a pending clarification clears normally.
+    other = store.new_session()['session_id']
+    t2 = store.create_task(TaskSpec(session_id=other, request='x'))
+    store.update_task(t2['task_id'], status='succeeded')
+    store.clear_session(other)
+
+
 def test_rename_session_validates_and_persists(store):
     sid = store.new_session('旧名')['session_id']
     assert store.rename_session(sid, '  新名  ')['title'] == '新名'
